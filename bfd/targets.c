@@ -842,6 +842,7 @@ extern const bfd_target pef_vec;
 extern const bfd_target pef_xlib_vec;
 extern const bfd_target pj_elf32_vec;
 extern const bfd_target pj_elf32_le_vec;
+extern const bfd_target plan9_object_vec;
 extern const bfd_target plugin_vec;
 extern const bfd_target powerpc_boot_vec;
 extern const bfd_target powerpc_elf32_vec;
@@ -1397,6 +1398,7 @@ static const bfd_target * const _bfd_target_vector[] =
 	&plan9_amd64_vec,
 	&plan9_arm_vec,
 	&plan9_arm64_vec,
+	&plan9_object_vec,
 	&plan9_power_vec,
 	&plan9_power64_vec,
 

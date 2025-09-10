@@ -381,6 +381,7 @@ BFD32_BACKENDS = \
 	pei-mcore.lo \
 	pei-sh.lo \
 	peigen.lo \
+	plan9obj.lo \
 	plugin.lo \
 	ppcboot.lo \
 	reloc16.lo \
@@ -514,6 +515,7 @@ BFD32_BACKENDS_CFILES = \
 	pei-i386.c \
 	pei-mcore.c \
 	pei-sh.c \
+	plan9obj.c \
 	plugin.c \
 	ppcboot.c \
 	reloc16.c \
