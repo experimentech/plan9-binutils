@@ -44,7 +44,8 @@ fi
 
 # Collect sample executables and objects
 mapfile -t exe_samples < <(find "$samples_dir" -type f -perm -u+x -print 2>/dev/null | sort)
-mapfile -t obj_samples < <(find "$samples_dir" -type f \( -name '*.o' -o -name '*.obj' \) -print 2>/dev/null | sort)
+# Plan 9 object files: include *.7 (arm64), plus common *.o/*.obj just in case
+mapfile -t obj_samples < <(find "$samples_dir" -type f \( -name '*.7' -o -name '*.o' -o -name '*.obj' \) -print 2>/dev/null | sort)
 
 echo "==> Found ${#exe_samples[@]} executables and ${#obj_samples[@]} object files"
 
@@ -56,7 +57,14 @@ test_objdump_read() {
       ((fail++))
       return 1
     else
-      echo "PASS: objdump reads $kind $f"
+      # Try to surface detected format
+      local fmt
+      fmt=$(sed -n '1,4p' "$build_dir/.smoke.tmp" | sed -n 's/^.*file format \(.*\)$/\1/p' | head -n1 || true)
+      if [[ -n "${fmt:-}" ]]; then
+        echo "PASS: objdump reads $kind $f (format: $fmt)"
+      else
+        echo "PASS: objdump reads $kind $f"
+      fi
       ((pass++))
       return 0
     fi
