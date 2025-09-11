@@ -70,8 +70,19 @@ Examples:
 - We pin Autoconf to autoconf2.69 via AUTOCONF=autoconf2.69 to avoid version drift.
 - If a subproject lacks configure.ac, it is skipped.
 
+## Plan 9 smoke tests
+
+After a build, you can run basic read tests of sample 9front arm64 files. Point the script at your samples directory (by default it looks for `../arm64_9front_samples` relative to the repo):
+
+```bash
+# From repo root, after ./bootstrap.sh
+SAMPLES_DIR=../arm64_9front_samples ./scripts/plan9-smoke.sh
+```
+
+This exercises `objdump`, `nm`, and `strings` against the sample executables and object files. It exits non-zero on failure.
+
 ## Troubleshooting
 
 - Missing m4 macros: ensure Automake and Libtool dev packages are installed. The subprojects use `AC_CONFIG_AUX_DIR([..])` and `AC_CONFIG_MACRO_DIRS([..])` to find shared helpers in the repo root.
 - If make install fails in po/ due to mkinstalldirs, re-run `./bootstrap.sh` to refresh generated files; the build sets MKINSTALLDIRS to the parent’s mkinstalldirs.
-- If you edited configure or Makefile.in by hand, re-run `./bootstrap.sh` to regenerate cleanly.
+- If you edited generated files (configure, Makefile.in, aclocal.m4, config.h[.in], *.gmo, *.info) by hand, port those changes into the corresponding `*.ac`/`*.am` or source files instead, then re-run `./bootstrap.sh`. Generated files are ignored by git per `.gitignore` to prevent accidental commits.
