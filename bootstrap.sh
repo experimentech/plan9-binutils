@@ -11,6 +11,7 @@ build_dir=${BUILD_DIR:-"$root_dir/build"}
 prefix=${PREFIX:-/usr/local}
 destdir=${DESTDIR:-}
 jobs=${JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)}
+target=${TARGET:-}
 
 echo "==> Bootstrapping in $root_dir"
 mkdir -p "$build_dir"
@@ -58,13 +59,26 @@ popd >/dev/null
 
 echo "==> Configuring in $build_dir"
 cd "$build_dir"
-"$root_dir/configure" \
+cfg_cmd=("$root_dir/configure"
   --enable-ld \
   --enable-gold=no \
   --enable-gprofng \
   --with-zstd \
   --enable-shared \
-  --prefix="$prefix" "${CONFIGURE_FLAGS:-}" 
+  --prefix="$prefix")
+
+if [[ -n "$target" ]]; then
+  echo "==> Using target: $target"
+  cfg_cmd+=(--target="$target")
+fi
+
+if [[ -n "${CONFIGURE_FLAGS:-}" ]]; then
+  # shellcheck disable=SC2206
+  extra=( ${CONFIGURE_FLAGS} )
+  cfg_cmd+=("${extra[@]}")
+fi
+
+"${cfg_cmd[@]}"
 
 echo "==> Building (jobs=$jobs)"
 make -j"$jobs" V=1
