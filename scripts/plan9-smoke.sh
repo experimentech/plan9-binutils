@@ -51,26 +51,29 @@ echo "==> Found ${#exe_samples[@]} executables and ${#obj_samples[@]} object fil
 
 test_objdump_read() {
   local f="$1"; local kind="$2"
-  if "$objdump_bin" -f -- "$f" >"$build_dir/.smoke.tmp" 2>&1; then
-    if grep -qi 'file format not recognized' "$build_dir/.smoke.tmp"; then
+  local tmp="$build_dir/.smoke.read.$(date +%s).$$.log"
+  if "$objdump_bin" -f -- "$f" >"$tmp" 2>&1; then
+    if grep -qi 'file format not recognized' "$tmp"; then
       echo "FAIL: objdump cannot read $kind $f (format not recognized)"
       ((fail++))
       return 1
     else
       # Try to surface detected format
       local fmt
-      fmt=$(sed -n '1,4p' "$build_dir/.smoke.tmp" | sed -n 's/^.*file format \(.*\)$/\1/p' | head -n1 || true)
+      fmt=$(sed -n '1,4p' "$tmp" | sed -n 's/^.*file format \(.*\)$/\1/p' | head -n1 || true)
       if [[ -n "${fmt:-}" ]]; then
         echo "PASS: objdump reads $kind $f (format: $fmt)"
       else
         echo "PASS: objdump reads $kind $f"
       fi
+      rm -f "$tmp" || true
       ((pass++))
       return 0
     fi
   else
     echo "FAIL: objdump errored on $kind $f"
-    sed -n '1,4p' "$build_dir/.smoke.tmp" || true
+    sed -n '1,6p' "$tmp" || true
+    rm -f "$tmp" || true
     ((fail++))
     return 1
   fi
@@ -98,16 +101,45 @@ test_strings() {
   fi
 }
 
+# Verify we can disassemble
+test_disasm() {
+  local f="$1"; local kind="$2"
+  local tmp="$build_dir/.smoke.dis.$(date +%s).$$.log"
+  if "$objdump_bin" -d -- "$f" >"$tmp" 2>&1; then
+    # consider as pass if we see any typical disassembly line (address colon or a section header)
+    if grep -Eq 'Disassembly of section|^[[:space:]]*[0-9a-fA-F]+:' "$tmp"; then
+      echo "PASS: disasm $kind $f"
+      rm -f "$tmp" || true
+      ((pass++))
+      return 0
+    else
+      echo "FAIL: disasm produced no recognizable output for $kind $f"
+      sed -n '1,10p' "$tmp" || true
+      rm -f "$tmp" || true
+      ((fail++))
+      return 1
+    fi
+  else
+    echo "FAIL: disasm errored on $kind $f"
+    sed -n '1,10p' "$tmp" || true
+    rm -f "$tmp" || true
+    ((fail++))
+    return 1
+  fi
+}
+
 # Execute tests on executables
 for f in "${exe_samples[@]}"; do
   test_objdump_read "$f" exe
   test_nm "$f" exe
   test_strings "$f" exe
+  test_disasm "$f" exe
 done
 
 # Execute tests on object files
 for f in "${obj_samples[@]}"; do
   test_objdump_read "$f" obj
+  test_disasm "$f" obj
   test_nm "$f" obj
 done
 
