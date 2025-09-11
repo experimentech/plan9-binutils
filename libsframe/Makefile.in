@@ -15,6 +15,24 @@
 @SET_MAKE@
 
 #
+#   Copyright (C) 2022-2025 Free Software Foundation, Inc.
+#
+# This file is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; see the file COPYING.  If not see
+# <http://www.gnu.org/licenses/>.
+#
+
+#
 #   Copyright (C) 2019-2025 Free Software Foundation, Inc.
 #
 # This file is free software; you can redistribute it and/or modify
@@ -122,18 +140,7 @@ check_PROGRAMS = $(am__EXEEXT_1)
 @HAVE_COMPAT_DEJAGNU_TRUE@	testsuite/libsframe.find/plt-findfre-2
 subdir = .
 ACLOCAL_M4 = $(top_srcdir)/aclocal.m4
-am__aclocal_m4_deps = $(top_srcdir)/../bfd/acinclude.m4 \
-	$(top_srcdir)/../config/acx.m4 \
-	$(top_srcdir)/../config/dejagnu.m4 \
-	$(top_srcdir)/../config/depstand.m4 \
-	$(top_srcdir)/../config/jobserver.m4 \
-	$(top_srcdir)/../config/lead-dot.m4 \
-	$(top_srcdir)/../config/mmap.m4 \
-	$(top_srcdir)/../config/override.m4 \
-	$(top_srcdir)/../config/warnings.m4 \
-	$(top_srcdir)/../libtool.m4 $(top_srcdir)/../ltoptions.m4 \
-	$(top_srcdir)/../ltsugar.m4 $(top_srcdir)/../ltversion.m4 \
-	$(top_srcdir)/../lt~obsolete.m4 $(top_srcdir)/configure.ac
+am__aclocal_m4_deps = $(top_srcdir)/configure.ac
 am__configure_deps = $(am__aclocal_m4_deps) $(CONFIGURE_DEPENDENCIES) \
 	$(ACLOCAL_M4)
 DIST_COMMON = $(srcdir)/Makefile.am $(top_srcdir)/configure \
@@ -335,7 +342,8 @@ am__v_texidevnull_ = $(am__v_texidevnull_@AM_DEFAULT_V@)
 am__v_texidevnull_0 = > /dev/null
 am__v_texidevnull_1 = 
 INFO_DEPS = doc/sframe-spec.info
-am__TEXINFO_TEX_DIR = $(srcdir)
+TEXINFO_TEX = $(top_srcdir)/../texinfo.tex
+am__TEXINFO_TEX_DIR = $(top_srcdir)/..
 DVIS = doc/sframe-spec.dvi
 PDFS = doc/sframe-spec.pdf
 PSS = doc/sframe-spec.ps
@@ -383,7 +391,12 @@ am__DIST_COMMON = $(srcdir)/Makefile.in $(srcdir)/config.h.in \
 	$(top_srcdir)/../compile $(top_srcdir)/../config.guess \
 	$(top_srcdir)/../config.sub $(top_srcdir)/../depcomp \
 	$(top_srcdir)/../install-sh $(top_srcdir)/../ltmain.sh \
-	$(top_srcdir)/../missing $(top_srcdir)/../mkinstalldirs
+	$(top_srcdir)/../missing $(top_srcdir)/../mkinstalldirs \
+	../COPYING ../COPYING.LIB ../ChangeLog ../README ../ar-lib \
+	../compile ../config.guess ../config.rpath ../config.sub \
+	../depcomp ../install-sh ../ltmain.sh ../mdate-sh ../missing \
+	../mkinstalldirs ../ylwrap config.guess config.sub install-sh \
+	missing
 DISTFILES = $(DIST_COMMON) $(DIST_SOURCES) $(TEXINFOS) $(EXTRA_DIST)
 distdir = $(PACKAGE)-$(VERSION)
 top_distdir = $(distdir)
@@ -531,25 +544,6 @@ target_vendor = @target_vendor@
 top_build_prefix = @top_build_prefix@
 top_builddir = @top_builddir@
 top_srcdir = @top_srcdir@
-
-#
-#   Copyright (C) 2022-2025 Free Software Foundation, Inc.
-#
-# This file is free software; you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation; either version 2 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program; see the file COPYING.  If not see
-# <http://www.gnu.org/licenses/>.
-#
-ACLOCAL_AMFLAGS = -I .. -I ../config -I ../bfd
 AUTOMAKE_OPTIONS = dejagnu foreign no-texinfo.tex info-in-builddir subdir-objects
 
 # Variables that we might accumulate conditionally or in subdirs.

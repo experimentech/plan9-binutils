@@ -20,6 +20,8 @@ dnl
 m4_include([../bfd/version.m4])
 AC_INIT([ld], [BFD_VERSION])
 AC_CONFIG_SRCDIR(ldmain.c)
+AC_CONFIG_AUX_DIR([..])
+AC_CONFIG_MACRO_DIRS([.. ../config])
 
 AC_CANONICAL_TARGET
 AC_CANONICAL_BUILD

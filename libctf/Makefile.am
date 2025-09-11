@@ -17,7 +17,6 @@
 # <http://www.gnu.org/licenses/>.
 #
 
-ACLOCAL_AMFLAGS = -I .. -I ../config -I ../bfd
 
 AUTOMAKE_OPTIONS = dejagnu foreign info-in-builddir no-texinfo.tex
 

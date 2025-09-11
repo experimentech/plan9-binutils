@@ -24,8 +24,11 @@
 #include "opintl.h"
 
 #ifdef ARCH_all
-#ifdef BFD64
+/* Ensure AArch64 disassembler is available even if BFD64 is not defined.
+  This helps targets like Plan 9 AArch64 where libopcodes is built with
+  AArch64 support but the BFD64 gating may not be present in this TU.  */
 #define ARCH_aarch64
+#ifdef BFD64
 #define ARCH_alpha
 #define ARCH_bpf
 #define ARCH_ia64

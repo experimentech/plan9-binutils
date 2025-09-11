@@ -65,6 +65,7 @@ cfg_cmd=("$root_dir/configure"
   --enable-gprofng \
   --with-zstd \
   --enable-shared \
+  --enable-targets=${ENABLE_TARGETS:-all} \
   --prefix="$prefix")
 
 if [[ -n "$target" ]]; then

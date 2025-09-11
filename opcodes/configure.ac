@@ -20,6 +20,8 @@ dnl
 m4_include([../bfd/version.m4])
 AC_INIT([opcodes], [BFD_VERSION])
 AC_CONFIG_SRCDIR([z8k-dis.c])
+AC_CONFIG_AUX_DIR([..])
+AC_CONFIG_MACRO_DIRS([.. ../config])
 
 AC_CANONICAL_TARGET
 

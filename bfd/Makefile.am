@@ -87,7 +87,7 @@ BFD32_LIBS_CFILES = \
 	compress.c corefile.c elf-properties.c format.c hash.c \
 	libbfd.c linker.c merge.c opncls.c reloc.c \
 	section.c simple.c stab-syms.c stabs.c syms.c targets.c \
-	binary.c bfd-plan9.c plan9obj.c ihex.c srec.c tekhex.c verilog.c
+	binary.c bfd-plan9.c ihex.c srec.c tekhex.c verilog.c
 
 BFD64_LIBS_CFILES = archive64.c
 

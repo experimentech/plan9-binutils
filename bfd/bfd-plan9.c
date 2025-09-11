@@ -10,6 +10,9 @@
 #include "libbfd.h"
 #include <stdint.h>
 #include <stdio.h>
+/* Forward decl from plan9obj.c (object-file recognizer) */
+static bfd_cleanup plan9_object_p (bfd *);
+
 
 /* Plan 9 magic numbers - from 9front/sys/include/a.out.h */
 #define HDR_MAGIC    0x00008000
@@ -498,3 +501,38 @@ PLAN9_TARGET(arm, E_MAGIC, bfd_arch_arm, bfd_mach_arm_unknown);
 PLAN9_TARGET(arm64, R_MAGIC, bfd_arch_aarch64, bfd_mach_aarch64);
 PLAN9_TARGET(power, Q_MAGIC, bfd_arch_powerpc, bfd_mach_ppc);
 PLAN9_TARGET(power64, T_MAGIC, bfd_arch_powerpc, bfd_mach_ppc64);
+
+/* Define the plan9-object backend which recognizes raw Plan 9 object streams. */
+const bfd_target plan9_object_vec = {
+    "plan9-object",                 /* Name */
+    bfd_target_unknown_flavour,
+    BFD_ENDIAN_LITTLE,
+    BFD_ENDIAN_LITTLE,
+    (HAS_RELOC | HAS_SYMS | HAS_LOCALS),
+    (SEC_CODE | SEC_DATA | SEC_HAS_CONTENTS | SEC_ALLOC | SEC_LOAD | SEC_RELOC),
+    0,
+    ' ',
+    16,
+    0,
+    TARGET_KEEP_UNUSED_SECTION_SYMBOLS,
+    bfd_getl64, bfd_getl_signed_64, bfd_putl64,
+    bfd_getl32, bfd_getl_signed_32, bfd_putl32,
+    bfd_getl16, bfd_getl_signed_16, bfd_putl16,
+    bfd_getl64, bfd_getl_signed_64, bfd_putl64,
+    bfd_getl32, bfd_getl_signed_32, bfd_putl32,
+    bfd_getl16, bfd_getl_signed_16, bfd_putl16,
+    { plan9_object_p, bfd_generic_archive_p, _bfd_dummy_target, _bfd_dummy_target },
+    { _bfd_bool_bfd_false_error, _bfd_generic_mkarchive, _bfd_bool_bfd_false_error, _bfd_bool_bfd_false_error },
+    { _bfd_bool_bfd_false_error, _bfd_write_archive_contents, _bfd_bool_bfd_false_error, _bfd_bool_bfd_false_error },
+    BFD_JUMP_TABLE_GENERIC (_bfd_generic),
+    BFD_JUMP_TABLE_COPY (_bfd_generic),
+    BFD_JUMP_TABLE_CORE (_bfd_nocore),
+    BFD_JUMP_TABLE_ARCHIVE (_bfd_archive_bsd),
+    BFD_JUMP_TABLE_SYMBOLS (_bfd_nosymbols),
+    BFD_JUMP_TABLE_RELOCS (_bfd_norelocs),
+    BFD_JUMP_TABLE_WRITE (_bfd_generic),
+    BFD_JUMP_TABLE_LINK (_bfd_nolink),
+    BFD_JUMP_TABLE_DYNAMIC (_bfd_nodynamic),
+    NULL,
+    NULL
+};

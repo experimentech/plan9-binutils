@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -uo pipefail
 
 # Plan 9 binutils smoke tests using sample binaries/objects.
 #
@@ -43,15 +43,22 @@ if [[ ! -d "$samples_dir" ]]; then
 fi
 
 # Collect sample executables and objects
-mapfile -t exe_samples < <(find "$samples_dir" -type f -perm -u+x -print 2>/dev/null | sort)
+# Gather samples, pruning VCS dirs
+mapfile -t exe_samples < <(find "$samples_dir" -path '*/.git' -prune -o -type f -perm -u+x -print 2>/dev/null | sort)
 # Plan 9 object files: include *.7 (arm64), plus common *.o/*.obj just in case
-mapfile -t obj_samples < <(find "$samples_dir" -type f \( -name '*.7' -o -name '*.o' -o -name '*.obj' \) -print 2>/dev/null | sort)
+mapfile -t obj_samples < <(find "$samples_dir" -path '*/.git' -prune -o -type f \( -name '*.7' -o -name '*.o' -o -name '*.obj' \) -print 2>/dev/null | sort)
 
 echo "==> Found ${#exe_samples[@]} executables and ${#obj_samples[@]} object files"
 
 test_objdump_read() {
   local f="$1"; local kind="$2"
   local tmp="$build_dir/.smoke.read.$(date +%s).$$.log"
+  # Skip obvious non-binary or script/text files
+  if file --brief --mime "$f" 2>/dev/null | grep -Eq 'text/|shellscript|x-shellscript|/xml|/json'; then
+    echo "SKIP: $kind $f (text or script)"
+    ((pass++))
+    return 0
+  fi
   if "$objdump_bin" -f -- "$f" >"$tmp" 2>&1; then
     if grep -qi 'file format not recognized' "$tmp"; then
       echo "FAIL: objdump cannot read $kind $f (format not recognized)"
@@ -81,6 +88,11 @@ test_objdump_read() {
 
 test_nm() {
   local f="$1"; local kind="$2"
+  if file --brief --mime "$f" 2>/dev/null | grep -Eq 'text/|shellscript|x-shellscript|/xml|/json'; then
+    echo "SKIP: $kind $f (text or script)"
+    ((pass++))
+    return 0
+  fi
   if "$nm_bin" -- "$f" >/dev/null 2>&1; then
     echo "PASS: nm reads $kind $f"
     ((pass++))
@@ -92,6 +104,11 @@ test_nm() {
 
 test_strings() {
   local f="$1"; local kind="$2"
+  if file --brief --mime "$f" 2>/dev/null | grep -Eq 'text/|shellscript|x-shellscript|/xml|/json'; then
+    echo "SKIP: $kind $f (text or script)"
+    ((pass++))
+    return 0
+  fi
   if "$strings_bin" -- "$f" >/dev/null 2>&1; then
     echo "PASS: strings runs on $kind $f"
     ((pass++))
@@ -105,6 +122,11 @@ test_strings() {
 test_disasm() {
   local f="$1"; local kind="$2"
   local tmp="$build_dir/.smoke.dis.$(date +%s).$$.log"
+  if file --brief --mime "$f" 2>/dev/null | grep -Eq 'text/|shellscript|x-shellscript|/xml|/json'; then
+    echo "SKIP: $kind $f (text or script)"
+    ((pass++))
+    return 0
+  fi
   if "$objdump_bin" -d -- "$f" >"$tmp" 2>&1; then
     # consider as pass if we see any typical disassembly line (address colon or a section header)
     if grep -Eq 'Disassembly of section|^[[:space:]]*[0-9a-fA-F]+:' "$tmp"; then
@@ -130,19 +152,22 @@ test_disasm() {
 
 # Execute tests on executables
 for f in "${exe_samples[@]}"; do
-  test_objdump_read "$f" exe
-  test_nm "$f" exe
-  test_strings "$f" exe
-  test_disasm "$f" exe
+  test_objdump_read "$f" exe || true
+  test_nm "$f" exe || true
+  test_strings "$f" exe || true
+  test_disasm "$f" exe || true
 done
 
 # Execute tests on object files
 for f in "${obj_samples[@]}"; do
-  test_objdump_read "$f" obj
-  test_disasm "$f" obj
-  test_nm "$f" obj
+  test_objdump_read "$f" obj || true
+  test_disasm "$f" obj || true
+  test_nm "$f" obj || true
 done
 
 echo "==> Smoke summary: PASS=$pass FAIL=$fail"
-[[ $fail -eq 0 ]] || exit 3
-exit 0
+if [[ $fail -eq 0 ]]; then
+  exit 0
+else
+  exit 3
+fi

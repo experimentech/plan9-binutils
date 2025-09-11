@@ -18,6 +18,7 @@ dnl <http://www.gnu.org/licenses/>.
 
 m4_include([../../bfd/version.m4])
 AC_INIT([gprofng], [BFD_VERSION])
+dnl Macro dirs include the top-level config/ and this directory's parent
 AC_CONFIG_MACRO_DIRS([../../config ../..])
 AC_CONFIG_AUX_DIR(../..)
 AC_CANONICAL_TARGET

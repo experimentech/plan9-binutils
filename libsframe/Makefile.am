@@ -16,7 +16,6 @@
 # along with this program; see the file COPYING.  If not see
 # <http://www.gnu.org/licenses/>.
 #
-ACLOCAL_AMFLAGS = -I .. -I ../config -I ../bfd
 
 AUTOMAKE_OPTIONS = dejagnu foreign no-texinfo.tex info-in-builddir subdir-objects
 

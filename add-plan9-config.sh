@@ -1,7 +1,11 @@
 #!/bin/bash
-# Minimal Plan9 configuration addition (safe, non-destructive)
+# DEPRECATED: Plan 9 configuration is now integrated in canonical autotools files.
+# Please use ./bootstrap.sh instead of editing generated files.
 
-echo "Adding Plan9 configuration to existing build..."
+echo "This script is deprecated. Use ./bootstrap.sh for a clean, automated build."
+exit 1
+
+echo "Deprecated helper; no action taken."
 
 # Add Plan9 defines to config.h if not present
 if [ -f "bfd/config.h" ] && ! grep -q "HAVE_plan9_amd64_vec" bfd/config.h; then

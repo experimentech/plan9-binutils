@@ -2,7 +2,6 @@
 
 AUTOMAKE_OPTIONS = foreign
 
-ACLOCAL_AMFLAGS = -I .. -I ../config
 
 ZLIB_SOURCES = adler32.c compress.c crc32.c crc32.h deflate.c \
 deflate.h gzguts.h gzread.c gzclose.c gzwrite.c gzlib.c \

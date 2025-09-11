@@ -19,6 +19,8 @@ dnl <http://www.gnu.org/licenses/>.
 dnl
 
 AC_INIT([libsframe], [BFD_VERSION])
+AC_CONFIG_AUX_DIR([..])
+AC_CONFIG_MACRO_DIRS([.. ../config])
 AC_CONFIG_SRCDIR(sframe.c)
 
 AC_CANONICAL_TARGET

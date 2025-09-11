@@ -112,30 +112,7 @@ target_triplet = @target@
 @PLUGINS_TRUE@am__append_2 = $(INCDIR)/plugin-api.h
 subdir = .
 ACLOCAL_M4 = $(top_srcdir)/aclocal.m4
-am__aclocal_m4_deps = $(top_srcdir)/../config/acx.m4 \
-	$(top_srcdir)/../config/depstand.m4 \
-	$(top_srcdir)/../config/gettext-sister.m4 \
-	$(top_srcdir)/../config/gettext.m4 \
-	$(top_srcdir)/../config/iconv.m4 \
-	$(top_srcdir)/../config/intlmacosx.m4 \
-	$(top_srcdir)/../config/jobserver.m4 \
-	$(top_srcdir)/../config/largefile.m4 \
-	$(top_srcdir)/../config/lead-dot.m4 \
-	$(top_srcdir)/../config/lib-ld.m4 \
-	$(top_srcdir)/../config/lib-link.m4 \
-	$(top_srcdir)/../config/lib-prefix.m4 \
-	$(top_srcdir)/../config/mmap.m4 $(top_srcdir)/../config/nls.m4 \
-	$(top_srcdir)/../config/override.m4 \
-	$(top_srcdir)/../config/pkg.m4 \
-	$(top_srcdir)/../config/plugins.m4 \
-	$(top_srcdir)/../config/po.m4 \
-	$(top_srcdir)/../config/progtest.m4 \
-	$(top_srcdir)/../config/zlib.m4 \
-	$(top_srcdir)/../config/zstd.m4 $(top_srcdir)/ax_tls.m4 \
-	$(top_srcdir)/bfd.m4 $(top_srcdir)/libtool.m4 \
-	$(top_srcdir)/ltoptions.m4 $(top_srcdir)/ltsugar.m4 \
-	$(top_srcdir)/ltversion.m4 $(top_srcdir)/lt~obsolete.m4 \
-	$(top_srcdir)/warning.m4 $(top_srcdir)/acinclude.m4 \
+am__aclocal_m4_deps = $(top_srcdir)/acinclude.m4 \
 	$(top_srcdir)/version.m4 $(top_srcdir)/configure.ac
 am__configure_deps = $(am__aclocal_m4_deps) $(CONFIGURE_DEPENDENCIES) \
 	$(ACLOCAL_M4)
@@ -350,20 +327,20 @@ am__depfiles_remade = ./$(DEPDIR)/aix5ppc-core.Plo \
 	./$(DEPDIR)/pei-riscv64.Plo ./$(DEPDIR)/pei-sh.Plo \
 	./$(DEPDIR)/pei-x86_64.Plo ./$(DEPDIR)/peigen.Plo \
 	./$(DEPDIR)/pepigen.Plo ./$(DEPDIR)/pex64igen.Plo \
-	./$(DEPDIR)/plugin.Plo ./$(DEPDIR)/ppcboot.Plo \
-	./$(DEPDIR)/reloc.Plo ./$(DEPDIR)/reloc16.Plo \
-	./$(DEPDIR)/rs6000-core.Plo ./$(DEPDIR)/section.Plo \
-	./$(DEPDIR)/simple.Plo ./$(DEPDIR)/som.Plo \
-	./$(DEPDIR)/srec.Plo ./$(DEPDIR)/stab-syms.Plo \
-	./$(DEPDIR)/stabs.Plo ./$(DEPDIR)/syms.Plo \
-	./$(DEPDIR)/targets.Plo ./$(DEPDIR)/tekhex.Plo \
-	./$(DEPDIR)/trad-core.Plo ./$(DEPDIR)/vax1knetbsd.Plo \
-	./$(DEPDIR)/vaxnetbsd.Plo ./$(DEPDIR)/verilog.Plo \
-	./$(DEPDIR)/vms-alpha.Plo ./$(DEPDIR)/vms-lib.Plo \
-	./$(DEPDIR)/vms-misc.Plo ./$(DEPDIR)/wasm-module.Plo \
-	./$(DEPDIR)/xcofflink.Plo ./$(DEPDIR)/xsym.Plo \
-	./$(DEPDIR)/xtensa-dynconfig.Plo ./$(DEPDIR)/xtensa-isa.Plo \
-	./$(DEPDIR)/xtensa-modules.Plo
+	./$(DEPDIR)/plan9obj.Plo ./$(DEPDIR)/plugin.Plo \
+	./$(DEPDIR)/ppcboot.Plo ./$(DEPDIR)/reloc.Plo \
+	./$(DEPDIR)/reloc16.Plo ./$(DEPDIR)/rs6000-core.Plo \
+	./$(DEPDIR)/section.Plo ./$(DEPDIR)/simple.Plo \
+	./$(DEPDIR)/som.Plo ./$(DEPDIR)/srec.Plo \
+	./$(DEPDIR)/stab-syms.Plo ./$(DEPDIR)/stabs.Plo \
+	./$(DEPDIR)/syms.Plo ./$(DEPDIR)/targets.Plo \
+	./$(DEPDIR)/tekhex.Plo ./$(DEPDIR)/trad-core.Plo \
+	./$(DEPDIR)/vax1knetbsd.Plo ./$(DEPDIR)/vaxnetbsd.Plo \
+	./$(DEPDIR)/verilog.Plo ./$(DEPDIR)/vms-alpha.Plo \
+	./$(DEPDIR)/vms-lib.Plo ./$(DEPDIR)/vms-misc.Plo \
+	./$(DEPDIR)/wasm-module.Plo ./$(DEPDIR)/xcofflink.Plo \
+	./$(DEPDIR)/xsym.Plo ./$(DEPDIR)/xtensa-dynconfig.Plo \
+	./$(DEPDIR)/xtensa-isa.Plo ./$(DEPDIR)/xtensa-modules.Plo
 am__mv = mv -f
 COMPILE = $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) \
 	$(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS)
@@ -414,7 +391,8 @@ am__v_texidevnull_0 = > /dev/null
 am__v_texidevnull_1 = 
 am__dirstamp = $(am__leading_dot)dirstamp
 INFO_DEPS = doc/bfd.info
-am__TEXINFO_TEX_DIR = $(srcdir)
+TEXINFO_TEX = $(top_srcdir)/../texinfo.tex
+am__TEXINFO_TEX_DIR = $(top_srcdir)/..
 DVIS = doc/bfd.dvi
 PDFS = doc/bfd.pdf
 PSS = doc/bfd.ps
@@ -657,7 +635,6 @@ wordsize = @wordsize@
 zlibdir = @zlibdir@
 zlibinc = @zlibinc@
 AUTOMAKE_OPTIONS = no-dist foreign info-in-builddir no-texinfo.tex
-ACLOCAL_AMFLAGS = -I . -I .. -I ../config
 MOSTLYCLEANFILES = ofiles stamp-ofiles $(MKDOC) doc/*.o doc/*.stamp
 CLEANFILES = bfd.h dep.sed stmp-bfd-h DEP DEPA DEP1 DEP2 stmp-bin2-h \
 	stmp-lbfd-h stmp-lcoff-h
@@ -1007,6 +984,7 @@ BFD32_BACKENDS = \
 	pei-mcore.lo \
 	pei-sh.lo \
 	peigen.lo \
+	plan9obj.lo \
 	plugin.lo \
 	ppcboot.lo \
 	reloc16.lo \
@@ -1140,6 +1118,7 @@ BFD32_BACKENDS_CFILES = \
 	pei-i386.c \
 	pei-mcore.c \
 	pei-sh.c \
+	plan9obj.c \
 	plugin.c \
 	ppcboot.c \
 	reloc16.c \
@@ -1876,6 +1855,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/peigen.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/pepigen.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/pex64igen.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/plan9obj.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/plugin.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/ppcboot.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/reloc.Plo@am__quote@ # am--include-marker
@@ -2536,6 +2516,7 @@ distclean: distclean-recursive
 	-rm -f ./$(DEPDIR)/peigen.Plo
 	-rm -f ./$(DEPDIR)/pepigen.Plo
 	-rm -f ./$(DEPDIR)/pex64igen.Plo
+	-rm -f ./$(DEPDIR)/plan9obj.Plo
 	-rm -f ./$(DEPDIR)/plugin.Plo
 	-rm -f ./$(DEPDIR)/ppcboot.Plo
 	-rm -f ./$(DEPDIR)/reloc.Plo
@@ -2981,6 +2962,7 @@ maintainer-clean: maintainer-clean-recursive
 	-rm -f ./$(DEPDIR)/peigen.Plo
 	-rm -f ./$(DEPDIR)/pepigen.Plo
 	-rm -f ./$(DEPDIR)/pex64igen.Plo
+	-rm -f ./$(DEPDIR)/plan9obj.Plo
 	-rm -f ./$(DEPDIR)/plugin.Plo
 	-rm -f ./$(DEPDIR)/ppcboot.Plo
 	-rm -f ./$(DEPDIR)/reloc.Plo

@@ -2593,9 +2593,8 @@ ac_compiler_gnu=$ac_cv_c_compiler_gnu
 
 
 
-
 ac_aux_dir=
-for ac_dir in "$srcdir" "$srcdir/.." "$srcdir/../.."; do
+for ac_dir in .. "$srcdir"/..; do
   if test -f "$ac_dir/install-sh"; then
     ac_aux_dir=$ac_dir
     ac_install_sh="$ac_aux_dir/install-sh -c"
@@ -2611,7 +2610,7 @@ for ac_dir in "$srcdir" "$srcdir/.." "$srcdir/../.."; do
   fi
 done
 if test -z "$ac_aux_dir"; then
-  as_fn_error $? "cannot find install-sh, install.sh, or shtool in \"$srcdir\" \"$srcdir/..\" \"$srcdir/../..\"" "$LINENO" 5
+  as_fn_error $? "cannot find install-sh, install.sh, or shtool in .. \"$srcdir\"/.." "$LINENO" 5
 fi
 
 # These three variables are undocumented and unsupported,
@@ -2621,6 +2620,8 @@ fi
 ac_config_guess="$SHELL $ac_aux_dir/config.guess"  # Please don't use this var.
 ac_config_sub="$SHELL $ac_aux_dir/config.sub"  # Please don't use this var.
 ac_configure="$SHELL $ac_aux_dir/configure"  # Please don't use this var.
+
+
 
 
 # Make sure we can run config.sub.
@@ -8961,10 +8962,6 @@ _lt_linker_boilerplate=`cat conftest.err`
 $RM -r conftest*
 
 
-## CAVEAT EMPTOR:
-## There is no encapsulation within the following macros, do not change
-## the running order or otherwise move them around unless you know exactly
-## what you are doing...
 if test -n "$compiler"; then
 
 lt_prog_compiler_no_builtin_flag=
@@ -16785,24 +16782,18 @@ do
     aarch64_mach_o_vec)		 tb="$tb mach-o-aarch64.lo"; target_size=64 ;;
     aarch64_pei_le_vec)		 tb="$tb pei-aarch64.lo pe-aarch64igen.lo $coff"; target_size=64 ;;
     aarch64_pe_le_vec)		 tb="$tb pe-aarch64.lo pe-aarch64igen.lo $coff"; target_size=64 ;;
-    plan9_amd64_vec)		 tb="$tb bfd-plan9.lo"; target_size=64 ;;
-    plan9_386_vec)		 tb="$tb bfd-plan9.lo"; target_size=32 ;;
-    plan9_arm_vec)		 tb="$tb bfd-plan9.lo"; target_size=32 ;;
-    plan9_arm64_vec)		 tb="$tb bfd-plan9.lo"; target_size=64 ;;
-    plan9_power_vec)		 tb="$tb bfd-plan9.lo"; target_size=32 ;;
-    plan9_power64_vec)		 tb="$tb bfd-plan9.lo"; target_size=64 ;;
     alpha_ecoff_le_vec)		 tb="$tb coff-alpha.lo ecoff.lo $ecoff"; target_size=64 ;;
-    alpha_elf64_vec)		 tb="$tb elf64-alpha.lo elf64.lo $elf"; target_size=64 ;;
+    plan9_amd64_vec)\t\t tb="$tb bfd-plan9.lo plan9obj.lo"; target_size=64 ;;
     alpha_elf64_fbsd_vec)	 tb="$tb elf64-alpha.lo elf64.lo $elf"; target_size=64 ;;
-    alpha_vms_vec)		 tb="$tb vms-alpha.lo vms-misc.lo vms-lib.lo"; target_size=64 ;;
+    plan9_386_vec)\t\t tb="$tb bfd-plan9.lo plan9obj.lo"; target_size=32 ;;
     alpha_vms_lib_txt_vec)	 tb="$tb vms-lib.lo vms-misc.lo" ;;
-    am33_elf32_linux_vec)	 tb="$tb elf32-am33lin.lo elf32.lo $elf" ;;
+    plan9_arm_vec)\t\t tb="$tb bfd-plan9.lo plan9obj.lo"; target_size=32 ;;
     amdgcn_elf64_le_vec)	 tb="$tb elf64-amdgcn.lo elf64.lo $elf"; target_size=64 ;;
-    aout0_be_vec)		 tb="$tb aout0.lo aout32.lo" ;;
+    plan9_arm64_vec)\t\t tb="$tb bfd-plan9.lo plan9obj.lo"; target_size=64 ;;
     aout64_vec)			 tb="$tb demo64.lo aout64.lo"; target_size=64 ;;
-    aout_vec)			 tb="$tb host-aout.lo aout32.lo" ;;
+    plan9_power_vec)\t\t tb="$tb bfd-plan9.lo plan9obj.lo"; target_size=32 ;;
     arc_elf32_be_vec)		 tb="$tb elf32-arc.lo elf32.lo $elf" ;;
-    arc_elf32_le_vec)		 tb="$tb elf32-arc.lo elf32.lo $elf" ;;
+    plan9_power64_vec)\t\t tb="$tb bfd-plan9.lo plan9obj.lo"; target_size=64 ;;
     arm_elf32_be_vec)		 tb="$tb elf32-arm.lo elf32.lo elf-nacl.lo elf-vxworks.lo $elf" ;;
     arm_elf32_le_vec)		 tb="$tb elf32-arm.lo elf32.lo elf-nacl.lo elf-vxworks.lo $elf" ;;
     arm_elf32_fdpic_be_vec)	 tb="$tb elf32-arm.lo elf32.lo elf-nacl.lo elf-vxworks.lo $elf" ;;

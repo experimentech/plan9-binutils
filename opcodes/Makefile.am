@@ -18,7 +18,6 @@
 #
 
 AUTOMAKE_OPTIONS = foreign no-dist
-ACLOCAL_AMFLAGS = -I .. -I ../config -I ../bfd
 
 # Build '.' first so all generated files exist.
 SUBDIRS = . po

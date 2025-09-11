@@ -51,7 +51,7 @@ struct plan9_obj_tdata {
 #define plan9_obj_tdata(bfd) ((struct plan9_obj_tdata *)(bfd)->tdata.any)
 
 /* Forward declarations */
-static bfd_cleanup plan9_object_p (bfd *);
+bfd_cleanup plan9_object_p (bfd *);
 static bool plan9_mkobject (bfd *);
 static bool plan9_write_object_contents (bfd *);
 static long plan9_get_symtab_upper_bound (bfd *);
@@ -60,7 +60,7 @@ static asymbol *plan9_make_empty_symbol (bfd *);
 static void plan9_get_symbol_info (bfd *, asymbol *, symbol_info *);
 
 /* Object file detection - implements 9front isobjfile() logic */
-static bfd_cleanup
+bfd_cleanup
 plan9_object_p (bfd *abfd)
 {
     unsigned char buf[5];
@@ -358,53 +358,4 @@ plan9_get_symbol_info (bfd *abfd ATTRIBUTE_UNUSED, asymbol *symbol,
     bfd_symbol_info (symbol, ret);
 }
 
-/* Plan 9 object file target definition */
-const bfd_target plan9_object_vec = {
-    "plan9-object",                     /* name */
-    bfd_target_unknown_flavour,         /* flavour */
-    BFD_ENDIAN_LITTLE,                  /* byteorder */
-    BFD_ENDIAN_LITTLE,                  /* header_byteorder */
-    (HAS_RELOC | EXEC_P | HAS_LINENO |  /* object_flags */
-     HAS_DEBUG | HAS_SYMS | HAS_LOCALS | WP_TEXT | D_PAGED),
-    (SEC_CODE | SEC_DATA | SEC_ROM | SEC_HAS_CONTENTS | SEC_ALLOC | SEC_LOAD |
-     SEC_RELOC),                        /* section_flags */
-    0,                                  /* symbol_leading_char */
-    ' ',                                /* ar_pad_char */
-    16,                                 /* ar_max_namelen */
-    0,                                  /* match_priority */
-    TARGET_KEEP_UNUSED_SECTION_SYMBOLS,
-    bfd_getl64, bfd_getl_signed_64, bfd_putl64, /* data */
-    bfd_getl32, bfd_getl_signed_32, bfd_putl32,
-    bfd_getl16, bfd_getl_signed_16, bfd_putl16,
-    bfd_getl64, bfd_getl_signed_64, bfd_putl64, /* hdrs */
-    bfd_getl32, bfd_getl_signed_32, bfd_putl32,
-    bfd_getl16, bfd_getl_signed_16, bfd_putl16,
-    
-    { plan9_object_p,                   /* bfd_check_format */
-      bfd_generic_archive_p,
-      _bfd_dummy_target,
-      _bfd_dummy_target },
-      
-    { _bfd_bool_bfd_false_error,        /* bfd_set_format */
-      _bfd_generic_mkarchive,
-      _bfd_bool_bfd_false_error,
-      _bfd_bool_bfd_false_error },
-      
-    { _bfd_bool_bfd_false_error,        /* bfd_write_contents */
-      _bfd_write_archive_contents,
-      _bfd_bool_bfd_false_error,
-      _bfd_bool_bfd_false_error },
-      
-    BFD_JUMP_TABLE_GENERIC (_bfd_generic),
-    BFD_JUMP_TABLE_COPY (_bfd_generic),
-    BFD_JUMP_TABLE_CORE (_bfd_nocore),
-    BFD_JUMP_TABLE_ARCHIVE (_bfd_archive_bsd),
-    BFD_JUMP_TABLE_SYMBOLS (_bfd_nosymbols),
-    BFD_JUMP_TABLE_RELOCS (_bfd_norelocs),
-    BFD_JUMP_TABLE_WRITE (_bfd_generic),
-    BFD_JUMP_TABLE_LINK (_bfd_nolink),
-    BFD_JUMP_TABLE_DYNAMIC (_bfd_nodynamic),
-    
-    NULL,
-    NULL
-};
+/* Plan 9 object file target vector is defined in bfd-plan9.c to avoid duplication. */

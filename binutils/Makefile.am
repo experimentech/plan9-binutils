@@ -18,7 +18,6 @@
 #
 
 AUTOMAKE_OPTIONS = dejagnu no-dist foreign subdir-objects info-in-builddir no-texinfo.tex
-ACLOCAL_AMFLAGS = -I .. -I ../config -I ../bfd
 
 SUBDIRS = po
 

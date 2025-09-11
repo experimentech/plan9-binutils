@@ -20,7 +20,17 @@ This is GNU Binutils with added support for Plan 9 object files and executables.
 
 ## Building
 
-Standard GNU Binutils build process:
+Automated bootstrap (preferred):
+
+```bash
+# Optionally set DESTDIR and PREFIX
+export PREFIX=/usr/local
+export DESTDIR=/tmp/p9b-out   # optional
+
+./bootstrap.sh
+```
+
+Or standard GNU Binutils build process:
 
 ```bash
 ./configure --prefix=/usr/local
@@ -58,9 +68,14 @@ ld -m plan9_arm64 -o program.7.out program.7
 The Plan 9 support is implemented through:
 
 - BFD backend (`bfd/bfd-plan9.c`)
-- GAS object format support
+- GAS object format support (configure selects fmt=plan9 for *-*-plan9* targets)
 - Linker emulation scripts
 - Target-specific configurations
+
+## Notes
+
+- The build is fully automated. You no longer need to patch generated files.
+- Legacy helper scripts that edited generated files have been deprecated.
 
 ## License
 
