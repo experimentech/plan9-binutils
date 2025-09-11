@@ -18,7 +18,6 @@
 #
 
 AUTOMAKE_OPTIONS = dejagnu foreign no-dist subdir-objects info-in-builddir no-texinfo.tex
-ACLOCAL_AMFLAGS = -I .. -I ../config -I ../bfd
 
 MAINTAINERCLEANFILES =
 
@@ -303,6 +302,7 @@ OBJ_FORMAT_CFILES = \
 	config/obj-coff.c \
 	config/obj-ecoff.c \
 	config/obj-elf.c \
+	config/obj-plan9.c \
 	config/obj-evax.c \
 	config/obj-fdpicelf.c \
 	config/obj-macho.c \
@@ -314,6 +314,7 @@ OBJ_FORMAT_HFILES = \
 	config/obj-coff.h \
 	config/obj-ecoff.h \
 	config/obj-elf.h \
+	config/obj-plan9.h \
 	config/obj-evax.h \
 	config/obj-fdpicelf.h \
 	config/obj-macho.h \
@@ -324,6 +325,7 @@ OBJ_FORMAT_HFILES = \
 
 TARG_ENV_HFILES = \
 	config/te-386bsd.h \
+	config/te-plan9.h \
 	config/te-aix5.h \
 	config/te-armeabi.h \
 	config/te-armfbsdeabi.h \
@@ -360,7 +362,8 @@ TARG_ENV_CFILES = \
 MULTI_CFILES = \
 	config/e-crisaout.c \
 	config/e-criself.c \
-	config/e-mipself.c
+	config/e-mipself.c \
+	config/e-plan9.c
 
 CONFIG_ATOF_CFILES = \
 	config/atof-ieee.c \

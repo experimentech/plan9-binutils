@@ -17,7 +17,6 @@
 # <http://www.gnu.org/licenses/>.
 
 AUTOMAKE_OPTIONS = foreign
-ACLOCAL_AMFLAGS = -I . -I .. -I ../.. 
 
 CCSOURCES = \
 	Application.cc \
@@ -157,19 +156,24 @@ bin_PROGRAMS = gprofng-archive gprofng-collect-app gprofng \
 	gprofng-display-text gprofng-display-src
 
 gprofng_archive_SOURCES = gp-archive.cc ArchiveExp.cc
-gprofng_archive_LDADD = $(LIBGPROFNG) $(CLOCK_GETTIME_LINK) $(ZLIB)
+gprofng_archive_LDADD = $(LIBGPROFNG) $(CLOCK_GETTIME_LINK) $(ZLIB) \
+	$(GPROFNG_LIBADD) $(LD_NO_AS_NEEDED)
 
 gprofng_collect_app_SOURCES = gp-collect-app.cc checks.cc envsets.cc count.cc
-gprofng_collect_app_LDADD = $(LIBGPROFNG) $(CLOCK_GETTIME_LINK) $(ZLIB)
+gprofng_collect_app_LDADD = $(LIBGPROFNG) $(CLOCK_GETTIME_LINK) $(ZLIB) \
+	$(GPROFNG_LIBADD) $(LD_NO_AS_NEEDED)
 
 gprofng_SOURCES = gprofng.cc
-gprofng_LDADD = $(LIBGPROFNG) $(CLOCK_GETTIME_LINK) $(ZLIB)
+gprofng_LDADD = $(LIBGPROFNG) $(CLOCK_GETTIME_LINK) $(ZLIB) \
+	$(GPROFNG_LIBADD) $(LD_NO_AS_NEEDED)
 
 gprofng_display_src_SOURCES = gp-display-src.cc
-gprofng_display_src_LDADD = $(LIBGPROFNG) $(CLOCK_GETTIME_LINK) $(ZLIB)
+gprofng_display_src_LDADD = $(LIBGPROFNG) $(CLOCK_GETTIME_LINK) $(ZLIB) \
+	$(GPROFNG_LIBADD) $(LD_NO_AS_NEEDED)
 
 gprofng_display_text_SOURCES = gp-display-text.cc ipc.cc ipcio.cc
-gprofng_display_text_LDADD = $(LIBGPROFNG) $(CLOCK_GETTIME_LINK) $(ZLIB)
+gprofng_display_text_LDADD = $(LIBGPROFNG) $(CLOCK_GETTIME_LINK) $(ZLIB) \
+	$(GPROFNG_LIBADD) $(LD_NO_AS_NEEDED)
 
 # Distribution involves building the binaries to generate the manpage,
 # so ensure that the necessary libraries are built at dist time.

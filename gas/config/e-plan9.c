@@ -25,8 +25,23 @@ static const char *plan9_bfd_name (void);
 static const char *
 plan9_bfd_name (void)
 {
-  abort ();
-  return NULL;
+  /* Map assembler target CPU to the corresponding BFD Plan 9 vector name. */
+#if defined (TC_AARCH64)
+  return "plan9-arm64";
+#elif defined (TC_ARM)
+  return "plan9-arm";
+#elif defined (TC_PPC64)
+  return "plan9-power64";
+#elif defined (TC_PPC)
+  return "plan9-power";
+#elif defined (TC_I386)
+  return "plan9-386";
+#elif defined (TC_X86_64)
+  return "plan9-amd64";
+#else
+  /* Fallback to amd64 Plan 9 format if the target is unknown here. */
+  return "plan9-amd64";
+#endif
 }
 
 #define emul_bfd_name	plan9_bfd_name

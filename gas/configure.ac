@@ -28,6 +28,7 @@ dnl Autoconf 2.57 will find the aux dir without this.  However, unless
 dnl we specify this explicitly, automake-1.7 will assume that ylwrap is in
 dnl gas/ instead of gas/../.
 AC_CONFIG_AUX_DIR(..)
+AC_CONFIG_MACRO_DIRS([.. ../config])
 AC_CANONICAL_TARGET
 
 AM_INIT_AUTOMAKE

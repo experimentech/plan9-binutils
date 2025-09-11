@@ -17,7 +17,6 @@
 # <http://www.gnu.org/licenses/>.
 
 AUTOMAKE_OPTIONS = foreign
-ACLOCAL_AMFLAGS = -I . -I .. -I ../.. 
 
 bin_SCRIPTS   = gprofng-display-html
 CLEANFILES    = $(bin_SCRIPTS)

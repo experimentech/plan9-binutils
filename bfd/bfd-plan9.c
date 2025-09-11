@@ -69,107 +69,36 @@ static const struct plan9_arch_info plan9_archs[] = {
 };
 
 /* Forward declarations */
-static bool plan9_object_p (bfd *);
 static bool plan9_mkobject (bfd *);
 static bool plan9_write_object_contents (bfd *);
 static long plan9_get_symtab_upper_bound (bfd *);
-static long plan9_canonicalize_symtab (bfd *, asymbol **);
+static long plan9_canonicalize_symtab (bfd *abfd ATTRIBUTE_UNUSED, asymbol **syms ATTRIBUTE_UNUSED);
 static asymbol *plan9_make_empty_symbol (bfd *);
 static void plan9_get_symbol_info (bfd *, asymbol *, symbol_info *);
 static bool plan9_set_arch_mach (bfd *, enum bfd_architecture, unsigned long);
 
 /* BFD target vector functions */
 
-/* Check if this file is a Plan 9 object file */
-static bool
-plan9_object_p (bfd *abfd)
-{
-    struct plan9_exec_hdr hdr;
-    const struct plan9_arch_info *arch_info;
-    uint32_t magic;
-    
-    if (bfd_read (&hdr, PLAN9_EXEC_HDR_SIZE, abfd) != PLAN9_EXEC_HDR_SIZE)
-        return false;
-    
-    /* Plan 9 uses big-endian format for headers */
-    magic = bfd_getb32 (&hdr.magic);
-    
-    /* Find matching architecture */
-    for (arch_info = plan9_archs; arch_info->name; arch_info++) {
-        if (arch_info->magic == magic) {
-            /* Set architecture info */
-            bfd_set_arch_mach (abfd, arch_info->arch, arch_info->mach);
-            
-            /* Set up sections */
-            abfd->flags = EXEC_P | HAS_SYMS;
-            
-            /* Create text section */
-            if (bfd_getb32 (&hdr.text) > 0) {
-                asection *text_sec = bfd_make_section (abfd, ".text");
-                if (!text_sec) return false;
-                
-                text_sec->flags = SEC_ALLOC | SEC_LOAD | SEC_CODE;
-                text_sec->size = bfd_getb32 (&hdr.text);
-                text_sec->vma = bfd_getb32 (&hdr.entry);
-                text_sec->lma = text_sec->vma;
-                text_sec->filepos = PLAN9_EXEC_HDR_SIZE;
-            }
-            
-            /* Create data section */  
-            if (bfd_getb32 (&hdr.data) > 0) {
-                asection *data_sec = bfd_make_section (abfd, ".data");
-                if (!data_sec) return false;
-                
-                data_sec->flags = SEC_ALLOC | SEC_LOAD | SEC_DATA;
-                data_sec->size = bfd_getb32 (&hdr.data);
-                data_sec->vma = bfd_getb32 (&hdr.entry) + bfd_getb32 (&hdr.text);
-                data_sec->lma = data_sec->vma;
-                data_sec->filepos = PLAN9_EXEC_HDR_SIZE + bfd_getb32 (&hdr.text);
-            }
-            
-            /* Create BSS section */
-            if (bfd_getb32 (&hdr.bss) > 0) {
-                asection *bss_sec = bfd_make_section (abfd, ".bss");
-                if (!bss_sec) return false;
-                
-                bss_sec->flags = SEC_ALLOC;
-                bss_sec->size = bfd_getb32 (&hdr.bss);
-                bss_sec->vma = bfd_getb32 (&hdr.entry) + bfd_getb32 (&hdr.text) + bfd_getb32 (&hdr.data);
-                bss_sec->lma = bss_sec->vma;
-                /* BSS has no file position */
-            }
-            
-            /* Store header info for later use */
-            abfd->tdata.any = bfd_alloc (abfd, sizeof (struct plan9_exec_hdr));
-            if (!abfd->tdata.any) return false;
-            memcpy (abfd->tdata.any, &hdr, sizeof (struct plan9_exec_hdr));
-            
-            /* Set the start address */
-            abfd->start_address = bfd_getb32 (&hdr.entry);
-            
-            return true;
-        }
-    }
-    
-    return false;
-}
+/* (Removed unused generic plan9_object_p helper) */
 
 /* Target-specific object recognition functions */
-static bool plan9_object_p_magic (bfd *abfd, uint32_t expected_magic)
+static bfd_cleanup plan9_object_p_magic (bfd *abfd, uint32_t expected_magic)
 {
     struct plan9_exec_hdr hdr;
     const struct plan9_arch_info *arch_info;
     uint32_t magic;
     
+    if (bfd_seek (abfd, 0, SEEK_SET) != 0)
+        return NULL;
     if (bfd_read (&hdr, PLAN9_EXEC_HDR_SIZE, abfd) != PLAN9_EXEC_HDR_SIZE)
-        return false;
+        return NULL;
     
     /* Plan 9 uses big-endian format for headers */
     magic = bfd_getb32 (&hdr.magic);
     
     /* Check if this matches the expected magic for this target */
     if (magic != expected_magic)
-        return false;
+        return NULL;
     
     /* Find matching architecture */
     for (arch_info = plan9_archs; arch_info->name; arch_info++) {
@@ -217,26 +146,28 @@ static bool plan9_object_p_magic (bfd *abfd, uint32_t expected_magic)
             
             /* Store header info for later use */
             abfd->tdata.any = bfd_alloc (abfd, sizeof (struct plan9_exec_hdr));
-            if (!abfd->tdata.any) return false;
+            if (!abfd->tdata.any) return NULL;
             memcpy (abfd->tdata.any, &hdr, sizeof (struct plan9_exec_hdr));
             
             /* Set the start address */
             abfd->start_address = bfd_getb32 (&hdr.entry);
             
-            return true;
+            /* Set format and report success */
+            bfd_set_format (abfd, bfd_object);
+            return _bfd_no_cleanup;
         }
     }
     
-    return false;
+    return NULL;
 }
 
 /* Define target-specific object_p functions */
-static bool plan9_amd64_object_p (bfd *abfd) { return plan9_object_p_magic (abfd, S_MAGIC); }
-static bool plan9_386_object_p (bfd *abfd) { return plan9_object_p_magic (abfd, I_MAGIC); }
-static bool plan9_arm_object_p (bfd *abfd) { return plan9_object_p_magic (abfd, E_MAGIC); }
-static bool plan9_arm64_object_p (bfd *abfd) { return plan9_object_p_magic (abfd, R_MAGIC); }
-static bool plan9_power_object_p (bfd *abfd) { return plan9_object_p_magic (abfd, Q_MAGIC); }
-static bool plan9_power64_object_p (bfd *abfd) { return plan9_object_p_magic (abfd, T_MAGIC); }
+static bfd_cleanup plan9_amd64_object_p (bfd *abfd) { return plan9_object_p_magic (abfd, S_MAGIC); }
+static bfd_cleanup plan9_386_object_p (bfd *abfd) { return plan9_object_p_magic (abfd, I_MAGIC); }
+static bfd_cleanup plan9_arm_object_p (bfd *abfd) { return plan9_object_p_magic (abfd, E_MAGIC); }
+static bfd_cleanup plan9_arm64_object_p (bfd *abfd) { return plan9_object_p_magic (abfd, R_MAGIC); }
+static bfd_cleanup plan9_power_object_p (bfd *abfd) { return plan9_object_p_magic (abfd, Q_MAGIC); }
+static bfd_cleanup plan9_power64_object_p (bfd *abfd) { return plan9_object_p_magic (abfd, T_MAGIC); }
 
 /* Create a new Plan 9 BFD object */
 static bool
@@ -340,7 +271,7 @@ plan9_get_symtab_upper_bound (bfd *abfd)
 }
 
 static long  
-plan9_canonicalize_symtab (bfd *abfd, asymbol **syms)
+plan9_canonicalize_symtab (bfd *abfd ATTRIBUTE_UNUSED, asymbol **syms ATTRIBUTE_UNUSED)
 {
     /* TODO: Parse Plan 9 symbol table format */
     /* This is complex - symbols are variable length records */
@@ -428,7 +359,10 @@ plan9_get_section_contents (bfd *abfd, sec_ptr section, void *location,
     bfd_size_type bytes_read = bfd_read (location, count, abfd);
     
     /* Restore file position */
-    bfd_seek (abfd, current_pos, SEEK_SET);
+    {
+        int seek_rv = bfd_seek (abfd, current_pos, SEEK_SET);
+        (void) seek_rv;
+    }
     
     return bytes_read == count;
 }

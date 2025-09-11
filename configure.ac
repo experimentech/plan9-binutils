@@ -30,6 +30,10 @@ m4_include([ltoptions.m4])
 m4_include([ltsugar.m4])
 m4_include([ltversion.m4])
 m4_include([lt~obsolete.m4])
+m4_include([warning.m4])
+m4_include([zlib.m4])
+m4_include([zstd.m4])
+m4_include([mmap.m4])
 m4_include([config/isl.m4])
 
 AC_INIT

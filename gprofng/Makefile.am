@@ -16,7 +16,7 @@
 # along with this program; see the file COPYING3.  If not see
 # <http://www.gnu.org/licenses/>.
 
-ACLOCAL_AMFLAGS = -I . -I .. 
+## Ensure aclocal finds local custom m4 macros (e.g., config/bison.m4)
 
 AUTOMAKE_OPTIONS = dejagnu foreign
 

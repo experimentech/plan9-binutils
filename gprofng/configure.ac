@@ -19,6 +19,8 @@ dnl <http://www.gnu.org/licenses/>.
 m4_include([../bfd/version.m4])
 m4_include([../config/zlib.m4])
 AC_INIT([gprofng], [BFD_VERSION])
+AC_CONFIG_AUX_DIR([..])
+AC_CONFIG_MACRO_DIRS([config .. ../config])
 AC_CANONICAL_TARGET
 AM_INIT_AUTOMAKE([subdir-objects])
 AM_MAINTAINER_MODE
@@ -29,7 +31,7 @@ AC_PROG_CXX
 AC_PROG_INSTALL
 AC_PROG_RANLIB
 AM_PROG_AR
-gl_PROG_BISON([BISON],[3.0.4])
+gl_PROG_BISON([BISON], [3.0.4])
 
 AC_DISABLE_SHARED
 LT_INIT

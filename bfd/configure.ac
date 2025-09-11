@@ -20,6 +20,8 @@ dnl
 m4_include([version.m4])
 AC_INIT([bfd], [BFD_VERSION])
 AC_CONFIG_SRCDIR([libbfd.c])
+AC_CONFIG_AUX_DIR([..])
+AC_CONFIG_MACRO_DIRS([. .. ../config])
 
 AC_CANONICAL_TARGET
 
@@ -423,17 +425,17 @@ do
     plan9_power_vec)		 tb="$tb bfd-plan9.lo"; target_size=32 ;;
     plan9_power64_vec)		 tb="$tb bfd-plan9.lo"; target_size=64 ;;
     alpha_ecoff_le_vec)		 tb="$tb coff-alpha.lo ecoff.lo $ecoff"; target_size=64 ;;
-    alpha_elf64_vec)		 tb="$tb elf64-alpha.lo elf64.lo $elf"; target_size=64 ;;
+    plan9_amd64_vec)\t\t tb="$tb bfd-plan9.lo plan9obj.lo"; target_size=64 ;;
     alpha_elf64_fbsd_vec)	 tb="$tb elf64-alpha.lo elf64.lo $elf"; target_size=64 ;;
-    alpha_vms_vec)		 tb="$tb vms-alpha.lo vms-misc.lo vms-lib.lo"; target_size=64 ;;
+    plan9_386_vec)\t\t tb="$tb bfd-plan9.lo plan9obj.lo"; target_size=32 ;;
     alpha_vms_lib_txt_vec)	 tb="$tb vms-lib.lo vms-misc.lo" ;;
-    am33_elf32_linux_vec)	 tb="$tb elf32-am33lin.lo elf32.lo $elf" ;;
+    plan9_arm_vec)\t\t tb="$tb bfd-plan9.lo plan9obj.lo"; target_size=32 ;;
     amdgcn_elf64_le_vec)	 tb="$tb elf64-amdgcn.lo elf64.lo $elf"; target_size=64 ;;
-    aout0_be_vec)		 tb="$tb aout0.lo aout32.lo" ;;
+    plan9_arm64_vec)\t\t tb="$tb bfd-plan9.lo plan9obj.lo"; target_size=64 ;;
     aout64_vec)			 tb="$tb demo64.lo aout64.lo"; target_size=64 ;;
-    aout_vec)			 tb="$tb host-aout.lo aout32.lo" ;;
+    plan9_power_vec)\t\t tb="$tb bfd-plan9.lo plan9obj.lo"; target_size=32 ;;
     arc_elf32_be_vec)		 tb="$tb elf32-arc.lo elf32.lo $elf" ;;
-    arc_elf32_le_vec)		 tb="$tb elf32-arc.lo elf32.lo $elf" ;;
+    plan9_power64_vec)\t\t tb="$tb bfd-plan9.lo plan9obj.lo"; target_size=64 ;;
     arm_elf32_be_vec)		 tb="$tb elf32-arm.lo elf32.lo elf-nacl.lo elf-vxworks.lo $elf" ;;
     arm_elf32_le_vec)		 tb="$tb elf32-arm.lo elf32.lo elf-nacl.lo elf-vxworks.lo $elf" ;;
     arm_elf32_fdpic_be_vec)	 tb="$tb elf32-arm.lo elf32.lo elf-nacl.lo elf-vxworks.lo $elf" ;;

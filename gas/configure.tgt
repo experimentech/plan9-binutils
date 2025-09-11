@@ -126,6 +126,7 @@ esac
 generic_target=${cpu_type}-$vendor-$os
 # Note: This table is alpha-sorted, please try to keep it that way.
 case ${generic_target} in
+  aarch64*-*-plan9*)			fmt=plan9 em=plan9 ;;
   aarch64*-*-elf*)			fmt=elf;;
   aarch64*-*-fuchsia*)			fmt=elf;;
   aarch64*-*-haiku*)			fmt=elf em=haiku ;;
@@ -169,6 +170,7 @@ case ${generic_target} in
   arm-*-pe)				fmt=coff em=pe ;;
   arm-*-fuchsia*)			fmt=elf ;;
   arm-*-haiku*)				fmt=elf em=haiku ;;
+  arm-*-plan9*)				fmt=plan9 em=plan9 ;;
 
   avr-*-*)				fmt=elf bfd_gas=yes ;;
 
@@ -267,6 +269,7 @@ case ${generic_target} in
   i386-*-*nt*)				fmt=coff em=pe ;;
   i386-*-rdos*)				fmt=elf ;;
   i386-*-darwin*)			fmt=macho ;;
+  i386-*-plan9*)			fmt=plan9 em=plan9 ;;
 
   ia16-*-elf*)				fmt=elf ;;
 
@@ -369,6 +372,8 @@ case ${generic_target} in
   ppc-*-macos*)				fmt=coff em=macos ;;
   ppc-*-nto*)				fmt=elf ;;
   ppc-*-kaos*)				fmt=elf ;;
+  powerpc-*-plan9*)			fmt=plan9 em=plan9 ;;
+  powerpc64-*-plan9*)			fmt=plan9 em=plan9 ;;
 
   pru-*-*)				fmt=elf ;;
 
@@ -434,6 +439,8 @@ case ${generic_target} in
   z80-*-coff)				fmt=coff ;;
 
   z8k-*-coff | z8k-*-sim)		fmt=coff ;;
+
+  x86_64-*-plan9*)			fmt=plan9 em=plan9 ;;
 
   *-*-aout | *-*-scout)			fmt=aout ;;
   *-*-cloudabi*)			fmt=elf em=cloudabi ;;
