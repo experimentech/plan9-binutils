@@ -3,31 +3,57 @@ build/
 
 # Autotools outputs (generated)
 aclocal.m4
+**/aclocal.m4
 autom4te.cache/
 **/autom4te.cache/
 configure
+**/configure
+config.h
+**/config.h
 config.h.in
+**/config.h.in
 config.log
+**/config.log
 config.status
+**/config.status
+config.cache
+**/config.cache
 stamp-h1
+**/stamp-h1
 stamp-h
+**/stamp-h
 libtool
+**/libtool
 ltmain.sh
+**/ltmain.sh
+# Libtool macro copies
 m4/libtool.m4
-# Ignore libtool macro copies in any subdir's config/
+**/libtool.m4
+**/lt*.m4
 **/config/libtool.m4
 **/config/lt*.m4
 
 # Automake outputs (generated)
 Makefile.in
-depcomp
+**/Makefile.in
 compile
-missing
+**/compile
+depcomp
+**/depcomp
 install-sh
+**/install-sh
+missing
+**/missing
+mdate-sh
+**/mdate-sh
+ylwrap
+**/ylwrap
 
 # Per-dir automake/libtool caches
 .deps/
+**/.deps/
 .libs/
+**/.libs/
 
 # Info and manpages (generated)
 **/*.info
@@ -36,21 +62,19 @@ install-sh
 # gettext binaries
 **/*.gmo
 
-# Convenience copies under subdirs introduced by autoreconf
+# Autoconf helper scripts copied by autoreconf
 **/config.guess
 **/config.sub
 
-# Local helper
+# Local helper(s) and build products
 test-driver
+**/test-driver
 *.o
 *.lo
 *.la
 Makefile
-config.status
-config.log
-config.cache
-autom4te.cache/
-.deps/
-.libs/
+**/Makefile
+
+# Editor/backups
 *~
 *.bak
