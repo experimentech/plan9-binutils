@@ -2308,9 +2308,11 @@ s_aarch64_inst (int ignored ATTRIBUTE_UNUSED)
      MAP_DATA symbol pending. So we only align the address during
      MAP_DATA --> MAP_INSN transition.
      For other sections, this is not guaranteed.  */
+#if defined(OBJ_ELF) || defined(OBJ_COFF)
   enum mstate mapstate = seg_info (now_seg)->tc_segment_info_data.mapstate;
   if (!need_pass_2 && subseg_text_p (now_seg) && mapstate == MAP_DATA)
     frag_align_code (2, 0);
+#endif
 
 #ifdef OBJ_ELF
   mapping_state (MAP_INSN);
@@ -8652,16 +8654,20 @@ warn_unpredictable_ldst (aarch64_instruction *instr, char *str)
 static void
 force_automatic_sequence_close (void)
 {
+#if defined(OBJ_ELF) || defined(OBJ_COFF)
   struct aarch64_segment_info_type *tc_seg_info;
 
   tc_seg_info = &seg_info (now_seg)->tc_segment_info_data;
   if (tc_seg_info->insn_sequence.instr)
     {
       as_warn_where (tc_seg_info->last_file, tc_seg_info->last_line,
-		     _("previous `%s' sequence has not been closed"),
-		     tc_seg_info->insn_sequence.instr->opcode->name);
+                     _("previous `%s' sequence has not been closed"),
+                     tc_seg_info->insn_sequence.instr->opcode->name);
       init_insn_sequence (NULL, &tc_seg_info->insn_sequence);
     }
+#else
+  (void) now_seg; /* suppress unused warnings */
+#endif
 }
 
 /* A wrapper function to interface with libopcodes on encoding and
@@ -8727,9 +8733,13 @@ md_assemble (char *str)
     }
 
   /* Update the current insn_sequence from the segment.  */
+#if defined(OBJ_ELF) || defined(OBJ_COFF)
   tc_seg_info = &seg_info (now_seg)->tc_segment_info_data;
   insn_sequence = &tc_seg_info->insn_sequence;
   tc_seg_info->last_file = as_where (&tc_seg_info->last_line);
+#else
+  (void) tc_seg_info;
+#endif
 
   inst.reloc.type = BFD_RELOC_UNUSED;
 
@@ -8776,9 +8786,11 @@ md_assemble (char *str)
      MAP_DATA symbol pending. So we only align the address during
      MAP_DATA --> MAP_INSN transition.
      For other sections, this is not guaranteed.  */
+#if defined(OBJ_ELF) || defined(OBJ_COFF)
   enum mstate mapstate = seg_info (now_seg)->tc_segment_info_data.mapstate;
   if (!need_pass_2 && subseg_text_p (now_seg) && mapstate == MAP_DATA)
     frag_align_code (2, 0);
+#endif
 
   saved_cond = inst.cond;
   reset_aarch64_instruction (&inst);
@@ -8795,7 +8807,10 @@ md_assemble (char *str)
 	dump_opcode_operands (opcode);
 #endif /* DEBUG_AARCH64 */
 
-      mapping_state (MAP_INSN);
+  /* Only manage mapping state when available (ELF/COFF builds). */
+#if defined(OBJ_ELF) || defined(OBJ_COFF)
+  mapping_state (MAP_INSN);
+#endif
 
       inst_base = &inst.base;
       inst_base->opcode = opcode;
@@ -9186,10 +9201,16 @@ aarch64_init_frag (fragS * fragP, int max_chars)
     case rs_align:
       /* PR 20364: We can get alignment frags in code sections,
 	 so do not just assume that we should use the MAP_DATA state.  */
-      mapping_state_2 (subseg_text_p (now_seg) ? MAP_INSN : MAP_DATA, max_chars);
+  /* Only available when mapping state support is compiled (ELF/COFF). */
+#if defined(OBJ_ELF) || defined(OBJ_COFF)
+  mapping_state_2 (subseg_text_p (now_seg) ? MAP_INSN : MAP_DATA, max_chars);
+#endif
       break;
     case rs_align_code:
-      mapping_state_2 (MAP_INSN, max_chars);
+  /* Only available when mapping state support is compiled (ELF/COFF). */
+#if defined(OBJ_ELF) || defined(OBJ_COFF)
+  mapping_state_2 (MAP_INSN, max_chars);
+#endif
       break;
     default:
       break;
@@ -9246,7 +9267,12 @@ aarch64_sframe_get_abi_arch (void)
 void
 tc_aarch64_frame_initial_instructions (void)
 {
+#ifdef OBJ_ELF
   cfi_add_CFA_def_cfa (REG_SP, 0);
+#else
+  /* No DWARF CFI for non-ELF Plan 9 builds. */
+  (void) REG_SP;
+#endif
 }
 
 /* Convert REGNAME to a DWARF-2 register number.  */

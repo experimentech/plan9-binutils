@@ -67,10 +67,3 @@ const struct format_ops plan9_format_ops =
   0,	/* symbol_clone_hook.  */
   0,	/* adjust_symtab.  */
 };
-
-/* Stub for AArch64 mapping state function - Plan 9 doesn't need mapping state tracking */
-void
-mapping_state (enum mstate state ATTRIBUTE_UNUSED)
-{
-  /* Nothing to do - Plan 9 format doesn't require mapping state */
-}
