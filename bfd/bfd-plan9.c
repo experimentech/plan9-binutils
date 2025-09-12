@@ -10,18 +10,17 @@
 #include "libbfd.h"
 #include <stdint.h>
 #include <stdio.h>
-#include "plan9obj.h"
-/* Forward decl from plan9obj.c (object-file recognizer). */
-/* Use the public declaration to avoid mismatches and link errors. */
-/* For minimal builds (e.g. stripped Plan 9 only linker) we don't require the
-    separate plan9obj.c object stream recognizer. Instead we provide a very
-    small fallback object recognizer here. If plan9obj.c is present it becomes
-    unused but harmless. */
 #if defined(HAVE_CONFIG_H)
 #include "config.h"
 #endif
-/* Do not include plan9obj.h here; avoid pulling in external dependency in
-    reduced builds. */
+/* For minimal builds (e.g. stripped Plan 9 only linker) we don't require the
+   separate plan9obj.c object stream recognizer. Instead we provide a very
+   small fallback object recognizer here. If plan9obj.c is present it becomes
+   unused but harmless. Optionally enable plan9obj integration by defining
+   ENABLE_PLAN9OBJ at build time and providing plan9obj.c. */
+#ifdef ENABLE_PLAN9OBJ
+#include "plan9obj.h"
+#endif
 
 
 /* Plan 9 magic numbers - from 9front/sys/include/a.out.h */
@@ -278,16 +277,7 @@ plan9_write_object_contents (bfd *abfd)
         }
     }
     
-    /* Write data section */
-    if (data_sec && data_sec->size > 0) {
-        file_ptr data_offset = PLAN9_EXEC_HDR_SIZE + (text_sec ? text_sec->size : 0);
-        if (bfd_seek (abfd, data_offset, SEEK_SET) != 0)
-            return false;
-        if (data_sec->contents) {
-            if (bfd_write (data_sec->contents, data_sec->size, abfd) != data_sec->size)
-                return false;
-        }
-    }
+    /* Note: BSS section is not written (zero-initialized at runtime). */
     
     /* BSS section is not written to file (it's zero-initialized at runtime) */
     
@@ -358,7 +348,7 @@ plan9_canonicalize_symtab (bfd *abfd, asymbol **syms)
         /* value: 4 or 8 bytes (two 4B words) */
         uint32_t hi = 0, lo = 0;
         bfd_vma val = 0;
-    uint8_t type_plus;
+        uint8_t type_plus;
         char namebuf[1024];
 
         if (is64) {
@@ -377,7 +367,7 @@ plan9_canonicalize_symtab (bfd *abfd, asymbol **syms)
 
         /* type byte */
         if (read_left < 1) break;
-    if (bfd_read (&type_plus, 1, abfd) != 1) break;
+        if (bfd_read (&type_plus, 1, abfd) != 1) break;
         read_left -= 1;
         char t = (char)(type_plus - 0x80);
 
@@ -739,13 +729,22 @@ plan9_print_symbol (bfd *abfd,
 #define plan9obj_bfd_link_hide_symbol           _bfd_generic_link_hide_symbol
 #define plan9obj_bfd_define_start_stop          bfd_generic_define_start_stop
 
+#ifdef ENABLE_PLAN9OBJ
 /* plan9obj symbol-table helpers: use the backend implementations to expose
-   synthesized symbols from Plan 9 opcode streams. */
+    synthesized symbols from Plan 9 opcode streams. */
 long plan9obj_get_symtab_upper_bound (bfd *);
 long plan9obj_canonicalize_symtab (bfd *, asymbol **);
 asymbol *plan9obj_make_empty_symbol (bfd *);
 void plan9obj_print_symbol (bfd *, void *, asymbol *, bfd_print_symbol_type);
 void plan9obj_get_symbol_info (bfd *, asymbol *, symbol_info *);
+#else
+/* Minimal fallbacks when plan9obj.c is not linked: empty symtab. */
+static long plan9obj_get_symtab_upper_bound (bfd *abfd ATTRIBUTE_UNUSED) { return sizeof (asymbol *); }
+static long plan9obj_canonicalize_symtab (bfd *abfd ATTRIBUTE_UNUSED, asymbol **syms) { if (syms) syms[0] = NULL; return 0; }
+static asymbol *plan9obj_make_empty_symbol (bfd *abfd) { return plan9_make_empty_symbol (abfd); }
+static void plan9obj_print_symbol (bfd *abfd, void *filep, asymbol *symbol, bfd_print_symbol_type how) { plan9_print_symbol (abfd, filep, symbol, how); }
+static void plan9obj_get_symbol_info (bfd *abfd, asymbol *symbol, symbol_info *ret) { plan9_get_symbol_info (abfd, symbol, ret); }
+#endif
 #define plan9obj_get_symbol_version_string _bfd_nosymbols_get_symbol_version_string
 #define plan9obj_bfd_is_local_label_name  bfd_generic_is_local_label_name
 #define plan9obj_bfd_is_target_special_symbol _bfd_bool_bfd_asymbol_false
@@ -767,6 +766,13 @@ PLAN9_TARGET(power64, T_MAGIC, bfd_arch_powerpc, bfd_mach_ppc64);
 
 /* Define the plan9-object backend which recognizes raw Plan 9 object streams.
    Phase 1: symbol + section sizing only (no relocations). */
+/* Select the recognizer: prefer plan9obj.c when enabled, otherwise use
+   the tiny local fallback that only checks the opcode prefix. */
+#ifdef ENABLE_PLAN9OBJ
+#define PLAN9OBJ_OBJECT_P_FN plan9_object_p
+#else
+#define PLAN9OBJ_OBJECT_P_FN plan9_fallback_object_p
+#endif
 const bfd_target plan9_object_vec = {
     "plan9-object",                 /* Name */
     bfd_target_unknown_flavour,
@@ -785,7 +791,7 @@ const bfd_target plan9_object_vec = {
     bfd_getl64, bfd_getl_signed_64, bfd_putl64,
     bfd_getl32, bfd_getl_signed_32, bfd_putl32,
     bfd_getl16, bfd_getl_signed_16, bfd_putl16,
-    { plan9_object_p, bfd_generic_archive_p, _bfd_dummy_target, _bfd_dummy_target },
+    { PLAN9OBJ_OBJECT_P_FN, bfd_generic_archive_p, _bfd_dummy_target, _bfd_dummy_target },
     { _bfd_bool_bfd_false_error, _bfd_bool_bfd_false_error, _bfd_generic_mkarchive, _bfd_bool_bfd_false_error },
     { _bfd_bool_bfd_false_error, _bfd_bool_bfd_false_error, _bfd_write_archive_contents, _bfd_bool_bfd_false_error },
         BFD_JUMP_TABLE_GENERIC (_bfd_generic), /* close/free stays generic */
