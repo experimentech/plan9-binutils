@@ -100,6 +100,9 @@ aarch64-*-fuchsia*)	targ_emul=aarch64elf
 			;;
 aarch64-*-plan9*)	targ_emul=aarch64plan9
 			targ_extra_emuls=""
+			# Plan 9: avoid pulling in default ELF helper objects (ldelf*, ldelfgen*)
+			# Keep this empty so the emulation builds with only the Plan 9 pieces.
+			targ_extra_ofiles=""
 			;;
 aarch64_be-*-linux-gnu_ilp32)
 			targ_emul=aarch64linux32b
@@ -411,6 +414,8 @@ i[3-7]86-*-elf* | i[3-7]86-*-rtems* | i[3-7]86-*-genode*)
 			;;
 i[3-7]86-*-plan9*)	targ_emul=plan9_386
 			targ_extra_emuls=""
+			# Plan 9 386: strip ELF-specific extra ofiles for minimal toolchain.
+			targ_extra_ofiles=""
 			;;
 i[3-7]86-*-dragonfly*)	targ_emul=elf_i386
 			targ_extra_emuls="elf_iamcu i386bsd"
@@ -1018,7 +1023,7 @@ x86_64-*-linux-gnux32)	targ_emul=elf32_x86_64
 			tdir_elf_i386=`echo ${targ_alias} | sed -e 's/x86_64/i386/' -e 's/-linux-gnux32/-linux-gnu/'`
 			;;
 x86_64-*-linux-*)	targ_emul=elf_x86_64
-			targ_extra_emuls="elf32_x86_64 elf_i386 elf_iamcu"
+			targ_extra_emuls="elf32_x86_64 elf_i386 elf_iamcu aarch64plan9 plan9_amd64 plan9_386"
 			targ_extra_libpath="elf_i386 elf32_x86_64"
 			tdir_elf_i386=`echo ${targ_alias} | sed -e 's/x86_64/i386/'`
 			;;
@@ -1046,6 +1051,8 @@ x86_64-*-elf* | x86_64-*-rtems* | x86_64-*-fuchsia* | x86_64-*-genode*)
 			;;
 x86_64-*-plan9*)	targ_emul=plan9_amd64
 			targ_extra_emuls=""
+			# Plan 9 amd64: no ELF auxiliary objects.
+			targ_extra_ofiles=""
 			;;
 x86_64-*-dragonfly*)	targ_emul=elf_x86_64
 			targ_extra_emuls="elf_i386 elf_iamcu"

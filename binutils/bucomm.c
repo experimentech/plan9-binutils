@@ -163,12 +163,33 @@ bfd_xalloc (bfd *abfd, size_t size)
 void
 set_default_bfd_target (void)
 {
-  /* The macro TARGET is defined by Makefile.  */
-  const char *target = TARGET;
+  /* Prefer the configured target, but be resilient when building with a
+     reduced libbfd that omits the host default. Try a small set of
+     Plan 9 targets as fallbacks so tools like objdump/nm work out of
+     the box in this workspace. */
+  const char *candidates[] = {
+#ifdef TARGET
+    TARGET,
+#endif
+    /* Common aliases for this workspace. */
+    "aarch64-unknown-plan9",  /* triplet -> plan9-arm64 via targmatch */
+    "plan9-arm64",            /* Plan 9 AArch64 executable format */
+    "plan9-object",           /* Raw Plan 9 object stream backend */
+    NULL
+  };
 
-  if (! bfd_set_default_target (target))
-    fatal (_("can't set BFD default target to `%s': %s"),
-	   target, bfd_errmsg (bfd_get_error ()));
+  for (const char **p = candidates; *p; ++p)
+    if (bfd_set_default_target (*p))
+      return;
+
+  /* If all attempts fail, report the first attempted target for context. */
+  fatal (_("can't set BFD default target to `%s': %s"),
+#ifdef TARGET
+         TARGET,
+#else
+         "(none)",
+#endif
+         bfd_errmsg (bfd_get_error ()));
 }
 
 /* After a FALSE return from bfd_check_format_matches with

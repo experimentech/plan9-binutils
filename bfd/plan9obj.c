@@ -1,6 +1,10 @@
 /* Plan 9 Object File BFD backend - implements 9front opcode stream format
  * Copyright (C) 2025 Free Software Foundation, Inc.
  * Based on authoritative 9front source documentation
+ *
+ * Phase 1: minimal integration for GNU ld. We synthesize approximate
+ * section sizes and a symbol table from the opcode stream so the linker
+ * can at least enumerate and place code/data. No relocation records yet.
  */
 
 #include "sysdep.h"
@@ -18,13 +22,14 @@
 #define PLAN9_OBJ_MAGIC_BYTE 1
 #define PLAN9_OBJ_MAGIC_LT '<'
 
-/* Opcodes from 9front *.out.h */
-#define ANAME 144    /* From 6c/6.out.h - symbol name record */
-#define ASIGNAME 145 /* Symbol name with signature */
-#define ATEXT 146    /* Text section start */
-#define ADATA 147    /* Data initialization */
-#define AGLOBL 148   /* Global symbol */
-#define AEND 149     /* End of object */
+/* Opcodes for arm64 from 9front sys/src/cmd/7c/7.out.h */
+/* Verified via a small dump program in this workspace. */
+#define ATEXT    309    /* Text section start */
+#define ADATA    310    /* Data initialization */
+#define AGLOBL   311    /* Global symbol */
+#define ANAME    313    /* Symbol name record */
+#define ASIGNAME 320    /* Symbol name with signature */
+#define AEND     323    /* End of object */
 
 /* Address encoding flags - from l.h */
 #define T_TYPE    (1<<0)
@@ -46,18 +51,23 @@ struct plan9_obj_tdata {
     asection *text_section;
     asection *data_section;
     asection *bss_section;
+    bfd_size_type text_size;
+    bfd_size_type data_size;
 };
 
 #define plan9_obj_tdata(bfd) ((struct plan9_obj_tdata *)(bfd)->tdata.any)
 
 /* Forward declarations */
 bfd_cleanup plan9_object_p (bfd *);
-static bool plan9_mkobject (bfd *);
-static bool plan9_write_object_contents (bfd *);
-static long plan9_get_symtab_upper_bound (bfd *);
-static long plan9_canonicalize_symtab (bfd *, asymbol **);
-static asymbol *plan9_make_empty_symbol (bfd *);
-static void plan9_get_symbol_info (bfd *, asymbol *, symbol_info *);
+bool plan9obj_mkobject (bfd *);
+bool plan9obj_write_object_contents (bfd *);
+long plan9obj_get_symtab_upper_bound (bfd *);
+long plan9obj_canonicalize_symtab (bfd *, asymbol **);
+asymbol *plan9obj_make_empty_symbol (bfd *);
+void plan9obj_get_symbol_info (bfd *, asymbol *, symbol_info *);
+void plan9obj_print_symbol (bfd *abfd, void *filep, asymbol *symbol, bfd_print_symbol_type how);
+static bool parse_plan9_object (bfd *abfd);
+
 
 /* Object file detection - implements 9front isobjfile() logic */
 bfd_cleanup
@@ -78,10 +88,12 @@ plan9_object_p (bfd *abfd)
     {
         /* This looks like a Plan 9 object file */
         bfd_set_format (abfd, bfd_object);
-        
-        /* Set default architecture - we'll determine specific arch during parsing */
-        bfd_set_arch_mach (abfd, bfd_arch_unknown, 0);
-        
+        /* Default to aarch64 in this workspace; safe fallback if unknown. */
+        if (!bfd_set_arch_mach (abfd, bfd_arch_aarch64, bfd_mach_aarch64))
+            bfd_set_arch_mach (abfd, bfd_arch_unknown, 0);
+        /* Build sections + symbols now so tools can query them. */
+        if (!plan9obj_mkobject (abfd))
+            return NULL;
         return _bfd_no_cleanup;
     }
     
@@ -89,8 +101,8 @@ plan9_object_p (bfd *abfd)
 }
 
 /* Create Plan 9 object file structure */
-static bool
-plan9_mkobject (bfd *abfd)
+bool
+plan9obj_mkobject (bfd *abfd)
 {
     struct plan9_obj_tdata *tdata;
     size_t amt = sizeof (struct plan9_obj_tdata);
@@ -114,6 +126,12 @@ plan9_mkobject (bfd *abfd)
     if (!tdata->text_section || !tdata->data_section || !tdata->bss_section)
         return false;
     
+    /* Mark that this object will expose symbols (tools like nm/objdump key off this). */
+    abfd->flags |= HAS_SYMS | HAS_LOCALS;
+
+    /* Parse now to size sections and collect symbols. */
+    if (!parse_plan9_object (abfd))
+        return false;
     return true;
 }
 
@@ -180,7 +198,7 @@ parse_plan9_address (bfd *abfd, unsigned char *data, unsigned int offset,
     return pos - offset;
 }
 
-/* Parse Plan 9 object file - implements ldobj() logic from 9front */
+/* Parse Plan 9 object file - implements ldobj() logic from 9front (subset) */
 static bool
 parse_plan9_object (bfd *abfd)
 {
@@ -188,6 +206,8 @@ parse_plan9_object (bfd *abfd)
     size_t size;
     unsigned int pos = 0;
     asymbol *local_syms[NSYM] = {0};
+    /* Track the ANAME/ASIGNAME type byte for possible heuristics later. */
+    unsigned char local_types[NSYM] = {0};
     unsigned int symbol_count = 0;
     
     /* Read entire file into memory */
@@ -206,49 +226,102 @@ parse_plan9_object (bfd *abfd)
     }
     
     /* Parse opcode stream */
+    bool in_name_prefix = true; /* ANAME/ASIGNAME records usually come first */
     while (pos + 1 < size) {
+        unsigned int opcode_pos = pos;
         uint16_t opcode = data[pos] | (data[pos+1] << 8);
         pos += 2;
-        
-        if (opcode == AEND) {
-            break; /* End of object */
-        } else if (opcode == ANAME || opcode == ASIGNAME) {
-            /* Symbol record */
-            uint32_t signature = 0;
-            uint8_t sym_type, sym_index;
-            char *name;
-            
-            if (opcode == ASIGNAME) {
-                if (pos + 3 >= size) break;
-                signature = data[pos] | (data[pos+1] << 8) | 
-                           (data[pos+2] << 16) | (data[pos+3] << 24);
-                pos += 4;
-            }
-            
-            if (pos + 1 >= size) break;
-            sym_type = data[pos++];
-            sym_index = data[pos++];
-            
-            /* Extract null-terminated name */
-            name = (char *)(data + pos);
-            while (pos < size && data[pos] != 0) pos++;
-            if (pos >= size) break;
-            pos++; /* Skip null terminator */
-            
-            /* Create symbol if index is valid */
-            if (sym_index < NSYM && symbol_count < 1000) {
-                asymbol *sym = bfd_make_empty_symbol (abfd);
-                if (sym) {
-                    sym->name = bfd_alloc (abfd, strlen(name) + 1);
-                    if (sym->name) {
-                        strcpy ((char*)sym->name, name);
-                        sym->value = 0;
-                        sym->flags = BSF_LOCAL;
-                        local_syms[sym_index] = sym;
-                        symbol_count++;
+
+        /* Heuristic: try to parse ANAME/ASIGNAME without knowing opcode numbers. */
+        if (in_name_prefix) {
+            bool parsed_name = false;
+            unsigned int save = pos;
+
+            /* Try ANAME layout: [v][o][name\0] */
+            if (pos + 2 < size) {
+                uint8_t v = data[pos];
+                uint8_t o = data[pos + 1];
+                unsigned int nstart = pos + 2;
+                unsigned int nend = nstart;
+                /* Find NUL within a reasonable bound */
+                while (nend < size && (nend - nstart) < 512 && data[nend] != 0)
+                    nend++;
+                if (nend < size && o < NSYM && v < 0x80 && (nend > nstart)) {
+                    /* Quick sanity: bytes printable or path-ish */
+                    bool ok = true;
+                    for (unsigned int i = nstart; i < nend; i++) {
+                        unsigned char ch = data[i];
+                        if (ch < 0x20 || ch > 0x7e) { ok = false; break; }
+                    }
+                    if (ok) {
+                        char *name = (char *)(data + nstart);
+                        asymbol *sym = bfd_make_empty_symbol (abfd);
+                        if (sym) {
+                            sym->name = bfd_alloc (abfd, (nend - nstart) + 1);
+                            if (sym->name) {
+                                memcpy ((char*)sym->name, name, (nend - nstart) + 1);
+                                sym->value = 0;
+                                sym->flags = BSF_LOCAL;
+                                local_syms[o] = sym;
+                                local_types[o] = v;
+                                symbol_count++;
+                                pos = nend + 1;
+                                parsed_name = true;
+                            }
+                        }
                     }
                 }
             }
+
+            if (!parsed_name) {
+                /* Try ASIGNAME layout: [sig32][v][o][name\0] */
+                pos = save; /* reset to after opcode */
+                if (pos + 6 < size) {
+                    /* uint32_t sig = ... unused for now */
+                    unsigned int nstart = pos + 6;
+                    uint8_t v = data[pos + 4];
+                    uint8_t o = data[pos + 5];
+                    unsigned int nend = nstart;
+                    while (nend < size && (nend - nstart) < 512 && data[nend] != 0)
+                        nend++;
+                    if (nend < size && o < NSYM && v < 0x80 && (nend > nstart)) {
+                        bool ok = true;
+                        for (unsigned int i = nstart; i < nend; i++) {
+                            unsigned char ch = data[i];
+                            if (ch < 0x20 || ch > 0x7e) { ok = false; break; }
+                        }
+                        if (ok) {
+                            char *name = (char *)(data + nstart);
+                            asymbol *sym = bfd_make_empty_symbol (abfd);
+                            if (sym) {
+                                sym->name = bfd_alloc (abfd, (nend - nstart) + 1);
+                                if (sym->name) {
+                                    memcpy ((char*)sym->name, name, (nend - nstart) + 1);
+                                    sym->value = 0;
+                                    sym->flags = BSF_LOCAL;
+                                    local_syms[o] = sym;
+                                    local_types[o] = v;
+                                    symbol_count++;
+                                    pos = nend + 1;
+                                    parsed_name = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (parsed_name)
+                continue; /* Handle next record */
+
+            /* First non-name record – resume opcode at saved point */
+            in_name_prefix = false;
+            pos = save; /* let normal parser consume the rest of this record */
+        }
+
+        /* Normal instruction path and section sizing */
+        if (opcode == AEND) {
+            break; /* End of object */
         } else {
             /* Regular instruction - parse line number and operands */
             if (pos + 3 >= size) break;
@@ -275,13 +348,27 @@ parse_plan9_object (bfd *abfd)
             if (opcode == ATEXT) {
                 /* Text section symbol */
                 if (to_addr.symbol) {
+                    /* Use current synthesized text size as the symbol's value (section-relative). */
                     to_addr.symbol->section = plan9_obj_tdata(abfd)->text_section;
+                    to_addr.symbol->value = plan9_obj_tdata(abfd)->text_size;
                     to_addr.symbol->flags = BSF_FUNCTION | BSF_GLOBAL;
                 }
-            } else if (opcode == ADATA || opcode == AGLOBL) {
-                /* Data section symbol */
+                /* Crude heuristic: treat each ATEXT instruction as 4 bytes. */
+                plan9_obj_tdata(abfd)->text_size += 4;
+            } else if (opcode == ADATA) {
+                /* Initialized data goes to .data */
                 if (to_addr.symbol) {
                     to_addr.symbol->section = plan9_obj_tdata(abfd)->data_section;
+                    to_addr.symbol->value = plan9_obj_tdata(abfd)->data_size;
+                    to_addr.symbol->flags = BSF_OBJECT | BSF_GLOBAL;
+                }
+                /* Approximate each ADATA as 8 bytes of data. */
+                plan9_obj_tdata(abfd)->data_size += 8;
+            } else if (opcode == AGLOBL) {
+                /* Uninitialized globals are typically BSS; default there. */
+                if (to_addr.symbol) {
+                    to_addr.symbol->section = plan9_obj_tdata(abfd)->bss_section;
+                    to_addr.symbol->value = 0; /* BSS offset unknown without size parsing */
                     to_addr.symbol->flags = BSF_OBJECT | BSF_GLOBAL;
                 }
             }
@@ -303,29 +390,35 @@ parse_plan9_object (bfd *abfd)
         }
     }
     
+    /* Apply synthesized sizes to sections so higher layers see something. */
+    if (plan9_obj_tdata(abfd)->text_section)
+        plan9_obj_tdata(abfd)->text_section->size = plan9_obj_tdata(abfd)->text_size;
+    if (plan9_obj_tdata(abfd)->data_section)
+        plan9_obj_tdata(abfd)->data_section->size = plan9_obj_tdata(abfd)->data_size;
+
     free (data);
     return true;
 }
 
 /* Stub implementations for required BFD functions */
-static bool
-plan9_write_object_contents (bfd *abfd ATTRIBUTE_UNUSED)
+bool
+plan9obj_write_object_contents (bfd *abfd ATTRIBUTE_UNUSED)
 {
     /* TODO: Implement Plan 9 object file writing */
     return false;
 }
 
-static long
-plan9_get_symtab_upper_bound (bfd *abfd)
+long
+plan9obj_get_symtab_upper_bound (bfd *abfd)
 {
     struct plan9_obj_tdata *tdata = plan9_obj_tdata (abfd);
-    if (!tdata)
+    if (!tdata || tdata->symbol_count == 0)
         return 0;
     return (tdata->symbol_count + 1) * sizeof (asymbol *);
 }
 
-static long
-plan9_canonicalize_symtab (bfd *abfd, asymbol **syms)
+long
+plan9obj_canonicalize_symtab (bfd *abfd, asymbol **syms)
 {
     struct plan9_obj_tdata *tdata = plan9_obj_tdata (abfd);
     unsigned int i;
@@ -341,8 +434,8 @@ plan9_canonicalize_symtab (bfd *abfd, asymbol **syms)
     return tdata->symbol_count;
 }
 
-static asymbol *
-plan9_make_empty_symbol (bfd *abfd)
+asymbol *
+plan9obj_make_empty_symbol (bfd *abfd)
 {
     size_t amt = sizeof (asymbol);
     asymbol *sym = (asymbol *) bfd_zalloc (abfd, amt);
@@ -351,11 +444,27 @@ plan9_make_empty_symbol (bfd *abfd)
     return sym;
 }
 
-static void
-plan9_get_symbol_info (bfd *abfd ATTRIBUTE_UNUSED, asymbol *symbol,
+void
+plan9obj_get_symbol_info (bfd *abfd ATTRIBUTE_UNUSED, asymbol *symbol,
                       symbol_info *ret)
 {
     bfd_symbol_info (symbol, ret);
 }
+
+void
+plan9obj_print_symbol (bfd *abfd, void *filep, asymbol *symbol, bfd_print_symbol_type how)
+{
+    FILE *file = (FILE*)filep;
+    switch (how) {
+        case bfd_print_symbol_name:
+            fprintf (file, "%s", symbol->name);
+            break;
+        default:
+            bfd_print_symbol_vandf (abfd, filep, symbol);
+            break;
+    }
+}
+
+/* Expose parse helper via a post-create hook if needed later. */
 
 /* Plan 9 object file target vector is defined in bfd-plan9.c to avoid duplication. */

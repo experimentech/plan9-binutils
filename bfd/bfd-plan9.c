@@ -10,8 +10,18 @@
 #include "libbfd.h"
 #include <stdint.h>
 #include <stdio.h>
-/* Forward decl from plan9obj.c (object-file recognizer) */
-static bfd_cleanup plan9_object_p (bfd *);
+#include "plan9obj.h"
+/* Forward decl from plan9obj.c (object-file recognizer). */
+/* Use the public declaration to avoid mismatches and link errors. */
+/* For minimal builds (e.g. stripped Plan 9 only linker) we don't require the
+    separate plan9obj.c object stream recognizer. Instead we provide a very
+    small fallback object recognizer here. If plan9obj.c is present it becomes
+    unused but harmless. */
+#if defined(HAVE_CONFIG_H)
+#include "config.h"
+#endif
+/* Do not include plan9obj.h here; avoid pulling in external dependency in
+    reduced builds. */
 
 
 /* Plan 9 magic numbers - from 9front/sys/include/a.out.h */
@@ -78,11 +88,33 @@ static long plan9_get_symtab_upper_bound (bfd *);
 static long plan9_canonicalize_symtab (bfd *abfd ATTRIBUTE_UNUSED, asymbol **syms ATTRIBUTE_UNUSED);
 static asymbol *plan9_make_empty_symbol (bfd *);
 static void plan9_get_symbol_info (bfd *, asymbol *, symbol_info *);
+static void plan9_print_symbol (bfd *, void *, asymbol *, bfd_print_symbol_type);
 static bool plan9_set_arch_mach (bfd *, enum bfd_architecture, unsigned long);
 
 /* BFD target vector functions */
 
-/* (Removed unused generic plan9_object_p helper) */
+/* (Removed unused generic plan9_object_p helper)
+     Provide a local minimalist object recognizer for the generic Plan 9
+     object stream target vector.  This only validates the two-byte opcode
+     prefix pattern used by 9front compilers (borrowed from earlier
+     plan9obj.c logic) and marks the bfd as an object file. */
+static bfd_cleanup
+plan9_fallback_object_p (bfd *abfd)
+{
+    unsigned char buf[5];
+    if (bfd_seek (abfd, 0, SEEK_SET) != 0)
+        return NULL;
+    if (bfd_read (buf, 5, abfd) != 5)
+        return NULL;
+    /* Check for the two magic byte arrangements identifying a Plan 9 object. */
+    if ((buf[2] == 1 && buf[3] == '<') || (buf[3] == 1 && buf[4] == '<'))
+    {
+        bfd_set_format (abfd, bfd_object);
+        bfd_set_arch_mach (abfd, bfd_arch_unknown, 0);
+        return _bfd_no_cleanup;
+    }
+    return NULL;
+}
 
 /* Target-specific object recognition functions */
 static bfd_cleanup plan9_object_p_magic (bfd *abfd, uint32_t expected_magic)
@@ -439,7 +471,7 @@ const bfd_target plan9_##arch_name##_vec = { \
   BFD_JUMP_TABLE_SYMBOLS (plan9), \
   BFD_JUMP_TABLE_RELOCS (_bfd_norelocs), \
   BFD_JUMP_TABLE_WRITE (plan9), \
-  BFD_JUMP_TABLE_LINK (_bfd_nolink), \
+        BFD_JUMP_TABLE_LINK (plan9), \
   BFD_JUMP_TABLE_DYNAMIC (_bfd_nodynamic), \
   NULL, \
   NULL \
@@ -494,6 +526,71 @@ plan9_print_symbol (bfd *abfd,
 #define plan9_get_section_contents plan9_get_section_contents
 #define plan9_get_section_contents_in_window _bfd_generic_get_section_contents_in_window
 
+/* Linker jump table: map Plan 9 backends to generic, non-erroring hooks. */
+/* These are used by both the Plan 9 executable targets (PLAN9_TARGET) and
+    our plan9-object backend. Keeping them generic avoids setting
+    bfd_error_invalid_operation during early ld setup. */
+#define plan9_sizeof_headers                 _bfd_nolink_sizeof_headers
+#define plan9_bfd_get_relocated_section_contents bfd_generic_get_relocated_section_contents
+#define plan9_bfd_relax_section              bfd_generic_relax_section
+#define plan9_bfd_link_hash_table_create     _bfd_generic_link_hash_table_create
+#define plan9_bfd_link_add_symbols           _bfd_generic_link_add_symbols
+#define plan9_bfd_link_just_syms             _bfd_generic_link_just_syms
+#define plan9_bfd_copy_link_hash_symbol_type _bfd_generic_copy_link_hash_symbol_type
+#define plan9_bfd_final_link                 _bfd_generic_final_link
+#define plan9_bfd_link_split_section         _bfd_generic_link_split_section
+#define plan9_bfd_link_check_relocs          _bfd_generic_link_check_relocs
+#define plan9_bfd_gc_sections                bfd_generic_gc_sections
+#define plan9_bfd_lookup_section_flags       bfd_generic_lookup_section_flags
+#define plan9_bfd_merge_sections             bfd_generic_merge_sections
+#define plan9_bfd_is_group_section           bfd_generic_is_group_section
+#define plan9_bfd_group_name                 bfd_generic_group_name
+#define plan9_bfd_discard_group              bfd_generic_discard_group
+#define plan9_section_already_linked         _bfd_generic_section_already_linked
+#define plan9_bfd_define_common_symbol       bfd_generic_define_common_symbol
+#define plan9_bfd_link_hide_symbol           _bfd_generic_link_hide_symbol
+#define plan9_bfd_define_start_stop          bfd_generic_define_start_stop
+
+/* For the plan9-object backend we use a separate NAME to keep macros clear. */
+#define plan9obj_sizeof_headers                 _bfd_nolink_sizeof_headers
+#define plan9obj_bfd_get_relocated_section_contents bfd_generic_get_relocated_section_contents
+#define plan9obj_bfd_relax_section              bfd_generic_relax_section
+#define plan9obj_bfd_link_hash_table_create     _bfd_generic_link_hash_table_create
+#define plan9obj_bfd_link_add_symbols           _bfd_generic_link_add_symbols
+#define plan9obj_bfd_link_just_syms             _bfd_generic_link_just_syms
+#define plan9obj_bfd_copy_link_hash_symbol_type _bfd_generic_copy_link_hash_symbol_type
+#define plan9obj_bfd_final_link                 _bfd_generic_final_link
+#define plan9obj_bfd_link_split_section         _bfd_generic_link_split_section
+#define plan9obj_bfd_link_check_relocs          _bfd_generic_link_check_relocs
+#define plan9obj_bfd_gc_sections                bfd_generic_gc_sections
+#define plan9obj_bfd_lookup_section_flags       bfd_generic_lookup_section_flags
+#define plan9obj_bfd_merge_sections             bfd_generic_merge_sections
+#define plan9obj_bfd_is_group_section           bfd_generic_is_group_section
+#define plan9obj_bfd_group_name                 bfd_generic_group_name
+#define plan9obj_bfd_discard_group              bfd_generic_discard_group
+#define plan9obj_section_already_linked         _bfd_generic_section_already_linked
+#define plan9obj_bfd_define_common_symbol       bfd_generic_define_common_symbol
+#define plan9obj_bfd_link_hide_symbol           _bfd_generic_link_hide_symbol
+#define plan9obj_bfd_define_start_stop          bfd_generic_define_start_stop
+
+/* plan9obj symbol-table helpers: use the backend implementations to expose
+   synthesized symbols from Plan 9 opcode streams. */
+long plan9obj_get_symtab_upper_bound (bfd *);
+long plan9obj_canonicalize_symtab (bfd *, asymbol **);
+asymbol *plan9obj_make_empty_symbol (bfd *);
+void plan9obj_print_symbol (bfd *, void *, asymbol *, bfd_print_symbol_type);
+void plan9obj_get_symbol_info (bfd *, asymbol *, symbol_info *);
+#define plan9obj_get_symbol_version_string _bfd_nosymbols_get_symbol_version_string
+#define plan9obj_bfd_is_local_label_name  bfd_generic_is_local_label_name
+#define plan9obj_bfd_is_target_special_symbol _bfd_bool_bfd_asymbol_false
+#define plan9obj_get_lineno               _bfd_nosymbols_get_lineno
+#define plan9obj_find_nearest_line        _bfd_nosymbols_find_nearest_line
+#define plan9obj_find_nearest_line_with_alt _bfd_nosymbols_find_nearest_line_with_alt
+#define plan9obj_find_line                _bfd_nosymbols_find_line
+#define plan9obj_find_inliner_info        _bfd_nosymbols_find_inliner_info
+#define plan9obj_bfd_make_debug_symbol    _bfd_nosymbols_bfd_make_debug_symbol
+#define plan9obj_read_minisymbols         _bfd_generic_read_minisymbols
+#define plan9obj_minisymbol_to_symbol     _bfd_generic_minisymbol_to_symbol
 /* Define targets for other architectures */
 PLAN9_TARGET(amd64, S_MAGIC, bfd_arch_i386, bfd_mach_x86_64);
 PLAN9_TARGET(386, I_MAGIC, bfd_arch_i386, bfd_mach_i386_i386);
@@ -502,14 +599,15 @@ PLAN9_TARGET(arm64, R_MAGIC, bfd_arch_aarch64, bfd_mach_aarch64);
 PLAN9_TARGET(power, Q_MAGIC, bfd_arch_powerpc, bfd_mach_ppc);
 PLAN9_TARGET(power64, T_MAGIC, bfd_arch_powerpc, bfd_mach_ppc64);
 
-/* Define the plan9-object backend which recognizes raw Plan 9 object streams. */
+/* Define the plan9-object backend which recognizes raw Plan 9 object streams.
+   Phase 1: symbol + section sizing only (no relocations). */
 const bfd_target plan9_object_vec = {
     "plan9-object",                 /* Name */
     bfd_target_unknown_flavour,
     BFD_ENDIAN_LITTLE,
     BFD_ENDIAN_LITTLE,
-    (HAS_RELOC | HAS_SYMS | HAS_LOCALS),
-    (SEC_CODE | SEC_DATA | SEC_HAS_CONTENTS | SEC_ALLOC | SEC_LOAD | SEC_RELOC),
+    (HAS_SYMS | HAS_LOCALS),          /* We expose symbols but no relocs yet. */
+    (SEC_CODE | SEC_DATA | SEC_HAS_CONTENTS | SEC_ALLOC | SEC_LOAD),
     0,
     ' ',
     16,
@@ -522,16 +620,16 @@ const bfd_target plan9_object_vec = {
     bfd_getl32, bfd_getl_signed_32, bfd_putl32,
     bfd_getl16, bfd_getl_signed_16, bfd_putl16,
     { plan9_object_p, bfd_generic_archive_p, _bfd_dummy_target, _bfd_dummy_target },
-    { _bfd_bool_bfd_false_error, _bfd_generic_mkarchive, _bfd_bool_bfd_false_error, _bfd_bool_bfd_false_error },
-    { _bfd_bool_bfd_false_error, _bfd_write_archive_contents, _bfd_bool_bfd_false_error, _bfd_bool_bfd_false_error },
-    BFD_JUMP_TABLE_GENERIC (_bfd_generic),
-    BFD_JUMP_TABLE_COPY (_bfd_generic),
+    { _bfd_bool_bfd_false_error, _bfd_bool_bfd_false_error, _bfd_generic_mkarchive, _bfd_bool_bfd_false_error },
+    { _bfd_bool_bfd_false_error, _bfd_bool_bfd_false_error, _bfd_write_archive_contents, _bfd_bool_bfd_false_error },
+        BFD_JUMP_TABLE_GENERIC (_bfd_generic), /* close/free stays generic */
+        BFD_JUMP_TABLE_COPY (_bfd_generic),
     BFD_JUMP_TABLE_CORE (_bfd_nocore),
-    BFD_JUMP_TABLE_ARCHIVE (_bfd_archive_bsd),
-    BFD_JUMP_TABLE_SYMBOLS (_bfd_nosymbols),
+        BFD_JUMP_TABLE_ARCHIVE (_bfd_archive_bsd),
+        BFD_JUMP_TABLE_SYMBOLS (plan9obj),
     BFD_JUMP_TABLE_RELOCS (_bfd_norelocs),
-    BFD_JUMP_TABLE_WRITE (_bfd_generic),
-    BFD_JUMP_TABLE_LINK (_bfd_nolink),
+        BFD_JUMP_TABLE_WRITE (_bfd_generic), /* set_section_contents ok */
+    BFD_JUMP_TABLE_LINK (plan9obj),
     BFD_JUMP_TABLE_DYNAMIC (_bfd_nodynamic),
     NULL,
     NULL

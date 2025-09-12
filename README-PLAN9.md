@@ -77,6 +77,23 @@ The Plan 9 support is implemented through:
 - The build is fully automated. You no longer need to patch generated files.
 - Legacy helper scripts that edited generated files have been deprecated.
 
+## Smoke Tests
+
+There is a lightweight smoke test that exercises objdump/nm/strings/disassembly on a sample set of Plan 9 ARM64 binaries and objects.
+
+Run it from the repo root:
+
+```bash
+make smoke
+```
+
+Environment variables you can override:
+
+- `BUILD_DIR` (default: `./build`) — path to the binutils build tree with tools such as `binutils/objdump`.
+- `SAMPLES_DIR` (default: `../arm64_9front_samples`) — path to sample files (executables/objects).
+
+The script automatically skips text/scripts and non-Plan 9 object files; genuine tool issues on real Plan 9 executables will still be reported as failures.
+
 ## License
 
 Same as GNU Binutils (GPL v3+)

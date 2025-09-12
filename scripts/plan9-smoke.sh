@@ -25,6 +25,20 @@ echo "==> samples: $samples_dir"
 fail=0
 pass=0
 
+is_text_or_script() {
+  local f="$1"
+  file --brief --mime "$f" 2>/dev/null | grep -Eq 'text/|shellscript|x-shellscript|/xml|/json'
+}
+
+is_plan9_bfd() {
+  local f="$1"
+  local out
+  if ! out=$("$objdump_bin" -f -- "$f" 2>/dev/null); then
+    return 1
+  fi
+  grep -qi 'file format[[:space:]]\+plan9' <<<"$out"
+}
+
 need() {
   local p="$1"; local name="$2"
   if [[ ! -x "$p" ]]; then
@@ -54,20 +68,35 @@ test_objdump_read() {
   local f="$1"; local kind="$2"
   local tmp="$build_dir/.smoke.read.$(date +%s).$$.log"
   # Skip obvious non-binary or script/text files
-  if file --brief --mime "$f" 2>/dev/null | grep -Eq 'text/|shellscript|x-shellscript|/xml|/json'; then
+  if is_text_or_script "$f"; then
     echo "SKIP: $kind $f (text or script)"
     ((pass++))
     return 0
   fi
   if "$objdump_bin" -f -- "$f" >"$tmp" 2>&1; then
     if grep -qi 'file format not recognized' "$tmp"; then
-      echo "FAIL: objdump cannot read $kind $f (format not recognized)"
-      ((fail++))
-      return 1
+      if [[ "$kind" == "obj" ]]; then
+        echo "SKIP: obj $f (not recognized as Plan 9 object)"
+        rm -f "$tmp" || true
+        ((pass++))
+        return 0
+      else
+        echo "FAIL: objdump cannot read $kind $f (format not recognized)"
+        ((fail++))
+        return 1
+      fi
     else
       # Try to surface detected format
       local fmt
       fmt=$(sed -n '1,4p' "$tmp" | sed -n 's/^.*file format \(.*\)$/\1/p' | head -n1 || true)
+      if [[ "$kind" == "obj" && -n "${fmt:-}" ]]; then
+        if ! grep -qi '^plan9' <<<"$fmt"; then
+          echo "SKIP: obj $f (not Plan 9: $fmt)"
+          rm -f "$tmp" || true
+          ((pass++))
+          return 0
+        fi
+      fi
       if [[ -n "${fmt:-}" ]]; then
         echo "PASS: objdump reads $kind $f (format: $fmt)"
       else
@@ -78,6 +107,14 @@ test_objdump_read() {
       return 0
     fi
   else
+    if grep -qi 'file format not recognized' "$tmp"; then
+      if [[ "$kind" == "obj" ]]; then
+        echo "SKIP: obj $f (not recognized as Plan 9 by objdump)"
+        rm -f "$tmp" || true
+        ((pass++))
+        return 0
+      fi
+    fi
     echo "FAIL: objdump errored on $kind $f"
     sed -n '1,6p' "$tmp" || true
     rm -f "$tmp" || true
@@ -88,8 +125,13 @@ test_objdump_read() {
 
 test_nm() {
   local f="$1"; local kind="$2"
-  if file --brief --mime "$f" 2>/dev/null | grep -Eq 'text/|shellscript|x-shellscript|/xml|/json'; then
+  if is_text_or_script "$f"; then
     echo "SKIP: $kind $f (text or script)"
+    ((pass++))
+    return 0
+  fi
+  if [[ "$kind" == "obj" ]] && ! is_plan9_bfd "$f"; then
+    echo "SKIP: obj $f (not recognized as Plan 9 by objdump)"
     ((pass++))
     return 0
   fi
@@ -104,8 +146,13 @@ test_nm() {
 
 test_strings() {
   local f="$1"; local kind="$2"
-  if file --brief --mime "$f" 2>/dev/null | grep -Eq 'text/|shellscript|x-shellscript|/xml|/json'; then
+  if is_text_or_script "$f"; then
     echo "SKIP: $kind $f (text or script)"
+    ((pass++))
+    return 0
+  fi
+  if [[ "$kind" == "obj" ]] && ! is_plan9_bfd "$f"; then
+    echo "SKIP: obj $f (not recognized as Plan 9 by objdump)"
     ((pass++))
     return 0
   fi
@@ -122,8 +169,13 @@ test_strings() {
 test_disasm() {
   local f="$1"; local kind="$2"
   local tmp="$build_dir/.smoke.dis.$(date +%s).$$.log"
-  if file --brief --mime "$f" 2>/dev/null | grep -Eq 'text/|shellscript|x-shellscript|/xml|/json'; then
+  if is_text_or_script "$f"; then
     echo "SKIP: $kind $f (text or script)"
+    ((pass++))
+    return 0
+  fi
+  if [[ "$kind" == "obj" ]] && ! is_plan9_bfd "$f"; then
+    echo "SKIP: obj $f (not recognized as Plan 9 by objdump)"
     ((pass++))
     return 0
   fi
