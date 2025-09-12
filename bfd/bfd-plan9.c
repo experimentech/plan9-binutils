@@ -306,11 +306,178 @@ plan9_get_symtab_upper_bound (bfd *abfd)
 }
 
 static long  
-plan9_canonicalize_symtab (bfd *abfd ATTRIBUTE_UNUSED, asymbol **syms ATTRIBUTE_UNUSED)
+plan9_canonicalize_symtab (bfd *abfd, asymbol **syms)
 {
-    /* TODO: Parse Plan 9 symbol table format */
-    /* This is complex - symbols are variable length records */
-    return 0;
+    /* Parse Plan 9 executable symbol table as written by putsymb():
+       - syms area begins after header + text + data (no padding assumed here)
+       - per entry:
+         [optional] high 32-bit word (when 64-bit writers emit llput)
+         low 32-bit word (value)
+         1 byte: type = t + 0x80 (t is ASCII letter: 'T','D','B','L','f','z','Z', ...)
+         name: NUL-terminated string, except for 'z'/'Z' which use a two-byte-pair
+               encoding terminated by two consecutive zero bytes.
+       - repeat until syms bytes consumed. */
+    struct plan9_exec_hdr *hdr = (struct plan9_exec_hdr *) abfd->tdata.any;
+    asection *text_sec = bfd_get_section_by_name (abfd, ".text");
+    asection *data_sec = bfd_get_section_by_name (abfd, ".data");
+    asection *bss_sec = bfd_get_section_by_name (abfd, ".bss");
+    file_ptr off;
+    bfd_size_type symsz;
+    bfd_size_type read_left;
+    bfd_size_type n = 0;
+    file_ptr save_pos;
+    uint32_t magic = 0;
+    bool is64 = false;
+    /* file alignment not applied to file offsets here */
+
+    if (!hdr)
+        return 0;
+
+    symsz = bfd_getb32 (&hdr->syms);
+    if (symsz == 0)
+        return 0;
+
+    /* Compute file offset of symbol table: header + text + data.
+       Note: for these 9front samples the writers do not pad file offsets
+       to INITRND between text and data. */
+    magic = bfd_getb32 (&hdr->magic);
+    off = PLAN9_EXEC_HDR_SIZE + (file_ptr) bfd_getb32 (&hdr->text)
+        + (file_ptr) bfd_getb32 (&hdr->data);
+
+    /* Decide whether values are 64-bit (writers emit an extra high word).
+       Use header magic to detect 64-bit arches. */
+    if (magic == R_MAGIC || magic == S_MAGIC || magic == T_MAGIC || magic == U_MAGIC)
+        is64 = true;
+
+    save_pos = bfd_tell (abfd);
+    if (bfd_seek (abfd, off, SEEK_SET) != 0)
+        return 0;
+
+    read_left = symsz;
+    while (read_left > 0) {
+        /* value: 4 or 8 bytes (two 4B words) */
+        uint32_t hi = 0, lo = 0;
+        bfd_vma val = 0;
+    uint8_t type_plus;
+        char namebuf[1024];
+
+        if (is64) {
+            if (read_left < 8) break;
+            if (bfd_read (&hi, 4, abfd) != 4) break;
+            if (bfd_read (&lo, 4, abfd) != 4) break;
+            read_left -= 8;
+            val = (((bfd_vma) bfd_getb32 (&hi)) << 32) | ((bfd_vma) bfd_getb32 (&lo));
+        } else {
+            if (read_left < 4) break;
+            if (bfd_read (&lo, 4, abfd) != 4) break;
+            read_left -= 4;
+            val = (bfd_vma) bfd_getb32 (&lo);
+        }
+
+
+        /* type byte */
+        if (read_left < 1) break;
+    if (bfd_read (&type_plus, 1, abfd) != 1) break;
+        read_left -= 1;
+        char t = (char)(type_plus - 0x80);
+
+        /* name string: normal NUL-terminated, except z/Z which are special. */
+        bfd_size_type nb = 0;
+        if (t == 'z' || t == 'Z') {
+            /* Two-byte pair encoding terminated by two zero bytes. We don't
+               reconstruct the path here; skip bytes until 0x00 0x00. */
+            int prev_zero = 0;
+            while (read_left > 0) {
+                unsigned char b;
+                if (bfd_read (&b, 1, abfd) != 1) { read_left = 0; break; }
+                read_left -= 1;
+                if (b == 0) {
+                    if (prev_zero) break; /* end */
+                    prev_zero = 1;
+                } else {
+                    prev_zero = 0;
+                }
+            }
+            /* Skip history/file entries; they are not real symbols for nm. */
+            continue;
+        } else {
+            /* Regular NUL-terminated name */
+            while (nb + 1 < (bfd_size_type) sizeof (namebuf)) {
+                unsigned char b;
+                if (read_left == 0) break;
+                if (bfd_read (&b, 1, abfd) != 1) { read_left = 0; break; }
+                read_left -= 1;
+                namebuf[nb++] = (char) b;
+                if (b == '\0') break;
+            }
+            if (nb == 0) break; /* malformed */
+        }
+
+        /* Skip non-symbol informational records ('f' file, 'm' frame, 'a' auto, 'p' param). */
+        if (t == 'f' || t == 'm' || t == 'a' || t == 'p') {
+            continue;
+        }
+
+        /* Create symbol for program-relevant entries only */
+        if (!(t == 'T' || t == 'L' || t == 'D' || t == 'B'))
+            continue;
+        {
+            asymbol *sym = bfd_zalloc (abfd, sizeof (asymbol));
+            if (!sym) break;
+            sym->the_bfd = abfd;
+            /* Ensure name is set (even if empty) */
+            if (nb > 0) {
+                sym->name = bfd_alloc (abfd, nb);
+                if (!sym->name) break;
+                memcpy ((char*)sym->name, namebuf, nb);
+            } else {
+                sym->name = "";
+            }
+
+            /* Classify by type letter when possible; fallback to ranges. */
+            switch (t) {
+                case 'T': /* text symbol */
+                case 'L': /* local text */
+                    sym->section = text_sec ? text_sec : bfd_abs_section_ptr;
+                    sym->flags = BSF_FUNCTION | (t == 'L' ? 0 : BSF_GLOBAL);
+                    if (text_sec)
+                        sym->value = val - text_sec->vma;
+                    else
+                        sym->value = val;
+                    break;
+                case 'D':
+                    sym->section = data_sec ? data_sec : bfd_abs_section_ptr;
+                    sym->flags = BSF_OBJECT | BSF_GLOBAL;
+                    if (data_sec)
+                        sym->value = val - data_sec->vma;
+                    else
+                        sym->value = val;
+                    break;
+                case 'B':
+                    sym->section = bss_sec ? bss_sec : bfd_abs_section_ptr;
+                    sym->flags = BSF_OBJECT | BSF_GLOBAL;
+                    if (bss_sec)
+                        sym->value = val - bss_sec->vma;
+                    else
+                        sym->value = val;
+                    break;
+                default:
+                    break;
+            }
+            syms[n++] = sym;
+        }
+    }
+
+    /* Null-terminate the list as expected. */
+    syms[n] = NULL;
+
+    /* Restore file position */
+    {
+        int _ = bfd_seek (abfd, save_pos, SEEK_SET);
+        (void) _;
+    }
+
+    return (long) n;
 }
 
 static asymbol *
@@ -339,8 +506,6 @@ plan9_set_section_contents (bfd *abfd, sec_ptr section, const void *data,
         if (!section->contents)
             return false;
     }
-    
-    /* Bounds check */
     if (offset + count > section->size)
         return false;
     
@@ -491,9 +656,10 @@ plan9_print_symbol (bfd *abfd,
     case bfd_print_symbol_name:
       fprintf (file, "%s", symbol->name);
       break;
-    default:
-      bfd_print_symbol_vandf (abfd, filep, symbol);
-      break;
+        default:
+            bfd_print_symbol_vandf (abfd, filep, symbol);
+            fprintf (file, " %s", symbol->name);
+            break;
     }
 }
 
