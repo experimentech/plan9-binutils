@@ -78,7 +78,7 @@ extern asection *text_section, *data_section, *bss_section;
 #define obj_read_begin_hook()    do { /* Nothing needed */ } while (0)
 #define obj_symbol_new_hook(s)   do { /* Nothing needed */ } while (0)
 
-#define EMIT_SECTION_SYMBOLS     0
+#define EMIT_SECTION_SYMBOLS     1
 
 /* Don't use STABS for Plan 9 */
 #undef AOUT_STABS

@@ -37,7 +37,7 @@ const struct format_ops plan9_format_ops =
 {
   bfd_target_unknown_flavour,
   0,	/* dfl_leading_underscore.  */
-  0,	/* emit_section_symbols.  */
+  1,	/* emit_section_symbols: expose section symbols for minimal nm output. */
   0,	/* begin.  */
   0,	/* end.  */
   0,	/* app_file.  */
