@@ -223,6 +223,8 @@ plan9_write_object_contents (bfd *abfd)
     asymbol **outs = bfd_get_outsymbols (abfd);
     unsigned int outcount = abfd->symcount;
     bool have_outsyms = (outs != NULL && outcount > 0);
+    /* Track presence of common linker-defined boundary symbols. */
+    bool outs_has_etext = false, outs_has_edata = false, outs_has_end = false;
     bfd_size_type symsize = 0;
     bool is64 = false;
     unsigned int i;
@@ -245,23 +247,40 @@ plan9_write_object_contents (bfd *abfd)
 
                  /* Compute symbol table size from outsymbols, if any.  We only
                         emit a subset: defined symbols in .text/.data/.bss. */
-                 if (have_outsyms)
+                         if (have_outsyms)
                      {
                          for (i = 0; i < outcount; i++)
                              {
                                  asymbol *s = outs[i];
                                  if (!s || !s->name || !s->section)
                                      continue;
-                                 /* Skip undefined/absolute/debug/etc. */
-                                 if (s->section == bfd_und_section_ptr
-                                         || s->section == bfd_abs_section_ptr
-                                         || s->section == bfd_com_section_ptr)
-                                     continue;
+                                         /* Mark boundary names if present. */
+                                         if (strcmp (s->name, "_etext") == 0) outs_has_etext = true;
+                                         else if (strcmp (s->name, "_edata") == 0) outs_has_edata = true;
+                                         else if (strcmp (s->name, "_end") == 0) outs_has_end = true;
+
+                                         /* Skip undefined/debug/common. Allow ABS only for special names
+                                                (_etext/_edata/_end) which we map below. */
+                                         if (s->section == bfd_und_section_ptr
+                                                 || s->section == bfd_com_section_ptr)
+                                             continue;
 
                                  /* Map to a Plan 9 type letter; skip if not one we handle. */
                                  char t = 0;
                                  flagword secf = s->section->flags;
-                                 if (secf & SEC_CODE)
+                                         if (s->section == bfd_abs_section_ptr)
+                                             {
+                                                 /* Map ABS boundary names to their types. */
+                                                 if (strcmp (s->name, "_etext") == 0)
+                                                     t = 'T';
+                                                 else if (strcmp (s->name, "_edata") == 0)
+                                                     t = 'D';
+                                                 else if (strcmp (s->name, "_end") == 0)
+                                                     t = 'B';
+                                                 else
+                                                     t = 0;
+                                             }
+                                         else if (secf & SEC_CODE)
                                      t = (s->flags & BSF_GLOBAL) ? 'T' : 'L';
                                  else if ((secf & SEC_DATA) || (secf & SEC_HAS_CONTENTS))
                                      t = 'D';
@@ -276,6 +295,22 @@ plan9_write_object_contents (bfd *abfd)
                                  symsize += (bfd_size_type) (strlen (s->name) + 1);
                              }
                      }
+                         /* Add synthetic boundary symbols if not already present. */
+                         {
+                             bfd_vma text_vma = text_sec ? text_sec->vma : 0;
+                             bfd_size_type textsz = text_sec ? text_sec->size : 0;
+                             bfd_vma data_vma = data_sec ? data_sec->vma : (text_vma + textsz);
+                             bfd_size_type datasz = data_sec ? data_sec->size : 0;
+                             bfd_size_type bsssz  = bss_sec ? bss_sec->size : 0;
+
+                             if (!outs_has_etext && text_sec)
+                                 symsize += (is64 ? 8 : 4) + 1 + (bfd_size_type) (strlen ("_etext") + 1);
+                             if (!outs_has_edata)
+                                 symsize += (is64 ? 8 : 4) + 1 + (bfd_size_type) (strlen ("_edata") + 1);
+                             if (!outs_has_end)
+                                 symsize += (is64 ? 8 : 4) + 1 + (bfd_size_type) (strlen ("_end") + 1);
+                             (void) data_vma; (void) datasz; (void) bsssz; /* values computed later */
+                         }
                  /* If the linker didn't populate outsymbols (or none qualified),
                         synthesize a minimal table with just a global text symbol
                         "main" at the entry point. */
@@ -346,21 +381,31 @@ plan9_write_object_contents (bfd *abfd)
                                 if (bfd_seek (abfd, sym_filepos, SEEK_SET) != 0)
                                         return false;
 
-                                if (have_outsyms)
+                                                if (have_outsyms)
                                     {
                                         for (i = 0; i < outcount; i++)
                                             {
                                                 asymbol *s = outs[i];
                                                 if (!s || !s->name || !s->section)
                                                     continue;
-                                                if (s->section == bfd_und_section_ptr
-                                                        || s->section == bfd_abs_section_ptr
-                                                        || s->section == bfd_com_section_ptr)
+                                                                if (s->section == bfd_und_section_ptr
+                                                                        || s->section == bfd_com_section_ptr)
                                                     continue;
 
                                                 char t = 0;
                                                 flagword secf = s->section->flags;
-                                                if (secf & SEC_CODE)
+                                                                if (s->section == bfd_abs_section_ptr)
+                                                                    {
+                                                                        if (strcmp (s->name, "_etext") == 0)
+                                                                            t = 'T';
+                                                                        else if (strcmp (s->name, "_edata") == 0)
+                                                                            t = 'D';
+                                                                        else if (strcmp (s->name, "_end") == 0)
+                                                                            t = 'B';
+                                                                        else
+                                                                            t = 0;
+                                                                    }
+                                                                else if (secf & SEC_CODE)
                                                     t = (s->flags & BSF_GLOBAL) ? 'T' : 'L';
                                                 else if ((secf & SEC_DATA) || (secf & SEC_HAS_CONTENTS))
                                                     t = 'D';
@@ -370,7 +415,7 @@ plan9_write_object_contents (bfd *abfd)
                                                     continue;
 
                                                 /* Compute absolute value: section VMA + section-relative value. */
-                                                bfd_vma aval = bfd_asymbol_value (s);
+                                                                bfd_vma aval = bfd_asymbol_value (s);
                                                 if (is64)
                                                     {
                                                         uint32_t hi = (uint32_t) (aval >> 32);
@@ -404,7 +449,7 @@ plan9_write_object_contents (bfd *abfd)
                                                         return false;
                                                 }
                                             }
-                                    }
+                                                        }
                                 else
                                     {
                                         /* Fallback: single T main at start address. */
@@ -549,7 +594,7 @@ plan9_canonicalize_symtab (bfd *abfd, asymbol **syms)
                 } else {
                     prev_zero = 0;
                 }
-            }
+                        }
             /* Skip history/file entries; they are not real symbols for nm. */
             continue;
         } else {
