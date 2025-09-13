@@ -30,10 +30,7 @@ if [[ ! -x "$OBJDUMP" || ! -x "$NM" ]]; then
   exit 1
 fi
 
-{
-  local IFS=' '
-  read -r -a samples <<< "${SAMPLES:-catclock md sudoku doom}"
-}
+IFS=' ' read -r -a samples <<< "${SAMPLES:-catclock md sudoku doom}"
 pass=0
 fail=0
 skip=0
@@ -47,6 +44,7 @@ check_one() {
   local path="$SAMPLES_DIR/$f"
   if [[ ! -f "$path" ]]; then
     echo "SKIP: $f (not found)"
+    ((skip++))
     return 0
   fi
   log "==== $f ===="
