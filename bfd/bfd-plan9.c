@@ -222,6 +222,7 @@ plan9_write_object_contents (bfd *abfd)
     /* Symbol table emission */
     asymbol **outs = bfd_get_outsymbols (abfd);
     unsigned int outcount = abfd->symcount;
+    bool have_outsyms = (outs != NULL && outcount > 0);
     bfd_size_type symsize = 0;
     bool is64 = false;
     unsigned int i;
@@ -242,47 +243,47 @@ plan9_write_object_contents (bfd *abfd)
                         is64 = true;
         }
 
-         /* Compute symbol table size from outsymbols, if any.  We only
-             emit a subset: defined symbols in .text/.data/.bss. */
-         if (outs && outcount > 0)
-            {
-                for (i = 0; i < outcount; i++)
-                    {
-                        asymbol *s = outs[i];
-                        if (!s || !s->name || !s->section)
-                            continue;
-                        /* Skip undefined/absolute/debug/etc. */
-                        if (s->section == bfd_und_section_ptr
-                                || s->section == bfd_abs_section_ptr
-                                || s->section == bfd_com_section_ptr)
-                            continue;
+                 /* Compute symbol table size from outsymbols, if any.  We only
+                        emit a subset: defined symbols in .text/.data/.bss. */
+                 if (have_outsyms)
+                     {
+                         for (i = 0; i < outcount; i++)
+                             {
+                                 asymbol *s = outs[i];
+                                 if (!s || !s->name || !s->section)
+                                     continue;
+                                 /* Skip undefined/absolute/debug/etc. */
+                                 if (s->section == bfd_und_section_ptr
+                                         || s->section == bfd_abs_section_ptr
+                                         || s->section == bfd_com_section_ptr)
+                                     continue;
 
-                        /* Map to a Plan 9 type letter; skip if not one we handle. */
-                        char t = 0;
-                        flagword secf = s->section->flags;
-                        if (secf & SEC_CODE)
-                            t = (s->flags & BSF_GLOBAL) ? 'T' : 'L';
-                        else if ((secf & SEC_DATA) || (secf & SEC_HAS_CONTENTS))
-                            t = 'D';
-                        else if ((secf & SEC_ALLOC) && !(secf & SEC_HAS_CONTENTS))
-                            t = 'B';
-                        if (t == 0)
-                            continue;
+                                 /* Map to a Plan 9 type letter; skip if not one we handle. */
+                                 char t = 0;
+                                 flagword secf = s->section->flags;
+                                 if (secf & SEC_CODE)
+                                     t = (s->flags & BSF_GLOBAL) ? 'T' : 'L';
+                                 else if ((secf & SEC_DATA) || (secf & SEC_HAS_CONTENTS))
+                                     t = 'D';
+                                 else if ((secf & SEC_ALLOC) && !(secf & SEC_HAS_CONTENTS))
+                                     t = 'B';
+                                 if (t == 0)
+                                     continue;
 
-                        /* value + type byte + NUL-terminated name */
-                        symsize += (is64 ? 8 : 4); /* value */
-                        symsize += 1;              /* type */
-                        symsize += (bfd_size_type) (strlen (s->name) + 1);
-                            }
-
-                        /* If the linker didn't populate outsymbols, synthesize a minimal
-                             table with just a global text symbol "main" at the entry point. */
-                        if (symsize == 0 && abfd->start_address != 0)
-                            {
-                                const char *fallback = "main";
-                                symsize = (is64 ? 8 : 4) + 1 + (bfd_size_type) (strlen (fallback) + 1);
-                            }
-            }
+                                 /* value + type byte + NUL-terminated name */
+                                 symsize += (is64 ? 8 : 4); /* value */
+                                 symsize += 1;              /* type */
+                                 symsize += (bfd_size_type) (strlen (s->name) + 1);
+                             }
+                     }
+                 /* If the linker didn't populate outsymbols (or none qualified),
+                        synthesize a minimal table with just a global text symbol
+                        "main" at the entry point. */
+                 if (symsize == 0 && abfd->start_address != 0)
+                     {
+                         const char *fallback = "main";
+                         symsize = (is64 ? 8 : 4) + 1 + (bfd_size_type) (strlen (fallback) + 1);
+                     }
 
         /* Populate header */
     memset (&disk_hdr, 0, sizeof (disk_hdr));
@@ -340,103 +341,103 @@ plan9_write_object_contents (bfd *abfd)
                                 + (file_ptr) (text_sec ? text_sec->size : 0)
                                 + (file_ptr) (data_sec ? data_sec->size : 0);
 
-            if (symsize > 0)
-            {
-                if (bfd_seek (abfd, sym_filepos, SEEK_SET) != 0)
-                    return false;
-
-                    if (outs && outcount > 0)
+                        if (symsize > 0)
                         {
-                            for (i = 0; i < outcount; i++)
-                                {
-                                    asymbol *s = outs[i];
-                                    if (!s || !s->name || !s->section)
-                                        continue;
-                                    if (s->section == bfd_und_section_ptr
-                                            || s->section == bfd_abs_section_ptr
-                                            || s->section == bfd_com_section_ptr)
-                                        continue;
+                                if (bfd_seek (abfd, sym_filepos, SEEK_SET) != 0)
+                                        return false;
 
-                                    char t = 0;
-                                    flagword secf = s->section->flags;
-                                    if (secf & SEC_CODE)
-                                        t = (s->flags & BSF_GLOBAL) ? 'T' : 'L';
-                                    else if ((secf & SEC_DATA) || (secf & SEC_HAS_CONTENTS))
-                                        t = 'D';
-                                    else if ((secf & SEC_ALLOC) && !(secf & SEC_HAS_CONTENTS))
-                                        t = 'B';
-                                    if (t == 0)
-                                        continue;
-
-                                    /* Compute absolute value: section VMA + section-relative value. */
-                                    bfd_vma aval = bfd_asymbol_value (s);
-                                    if (is64)
-                                        {
-                                            uint32_t hi = (uint32_t) (aval >> 32);
-                                            uint32_t lo = (uint32_t) (aval & 0xffffffffu);
-                                            bfd_byte w[8];
-                                            bfd_putb32 (hi, w);
-                                            bfd_putb32 (lo, w + 4);
-                                            if (bfd_write (w, 8, abfd) != 8)
-                                                return false;
-                                        }
-                                    else
-                                        {
-                                            uint32_t lo = (uint32_t) (aval & 0xffffffffu);
-                                            bfd_byte w[4];
-                                            bfd_putb32 (lo, w);
-                                            if (bfd_write (w, 4, abfd) != 4)
-                                                return false;
-                                        }
-
-                                    /* Type byte is ASCII letter + 0x80. */
+                                if (have_outsyms)
                                     {
-                                        uint8_t type_plus = (uint8_t) (t + 0x80);
+                                        for (i = 0; i < outcount; i++)
+                                            {
+                                                asymbol *s = outs[i];
+                                                if (!s || !s->name || !s->section)
+                                                    continue;
+                                                if (s->section == bfd_und_section_ptr
+                                                        || s->section == bfd_abs_section_ptr
+                                                        || s->section == bfd_com_section_ptr)
+                                                    continue;
+
+                                                char t = 0;
+                                                flagword secf = s->section->flags;
+                                                if (secf & SEC_CODE)
+                                                    t = (s->flags & BSF_GLOBAL) ? 'T' : 'L';
+                                                else if ((secf & SEC_DATA) || (secf & SEC_HAS_CONTENTS))
+                                                    t = 'D';
+                                                else if ((secf & SEC_ALLOC) && !(secf & SEC_HAS_CONTENTS))
+                                                    t = 'B';
+                                                if (t == 0)
+                                                    continue;
+
+                                                /* Compute absolute value: section VMA + section-relative value. */
+                                                bfd_vma aval = bfd_asymbol_value (s);
+                                                if (is64)
+                                                    {
+                                                        uint32_t hi = (uint32_t) (aval >> 32);
+                                                        uint32_t lo = (uint32_t) (aval & 0xffffffffu);
+                                                        bfd_byte w[8];
+                                                        bfd_putb32 (hi, w);
+                                                        bfd_putb32 (lo, w + 4);
+                                                        if (bfd_write (w, 8, abfd) != 8)
+                                                            return false;
+                                                    }
+                                                else
+                                                    {
+                                                        uint32_t lo = (uint32_t) (aval & 0xffffffffu);
+                                                        bfd_byte w[4];
+                                                        bfd_putb32 (lo, w);
+                                                        if (bfd_write (w, 4, abfd) != 4)
+                                                            return false;
+                                                    }
+
+                                                /* Type byte is ASCII letter + 0x80. */
+                                                {
+                                                    uint8_t type_plus = (uint8_t) (t + 0x80);
+                                                    if (bfd_write (&type_plus, 1, abfd) != 1)
+                                                        return false;
+                                                }
+
+                                                /* Name including trailing NUL. */
+                                                {
+                                                    size_t nlen = strlen (s->name) + 1;
+                                                    if (bfd_write (s->name, nlen, abfd) != (bfd_size_type) nlen)
+                                                        return false;
+                                                }
+                                            }
+                                    }
+                                else
+                                    {
+                                        /* Fallback: single T main at start address. */
+                                        const char *name = "main";
+                                        bfd_vma aval = abfd->start_address;
+                                        if (is64)
+                                            {
+                                                uint32_t hi = (uint32_t) (aval >> 32);
+                                                uint32_t lo = (uint32_t) (aval & 0xffffffffu);
+                                                bfd_byte w[8];
+                                                bfd_putb32 (hi, w);
+                                                bfd_putb32 (lo, w + 4);
+                                                if (bfd_write (w, 8, abfd) != 8)
+                                                    return false;
+                                            }
+                                        else
+                                            {
+                                                uint32_t lo = (uint32_t) (aval & 0xffffffffu);
+                                                bfd_byte w[4];
+                                                bfd_putb32 (lo, w);
+                                                if (bfd_write (w, 4, abfd) != 4)
+                                                    return false;
+                                            }
+                                        uint8_t type_plus = (uint8_t) ('T' + 0x80);
                                         if (bfd_write (&type_plus, 1, abfd) != 1)
                                             return false;
+                                        {
+                                            size_t nlen = strlen (name) + 1;
+                                            if (bfd_write (name, nlen, abfd) != (bfd_size_type) nlen)
+                                                return false;
+                                        }
                                     }
-
-                                    /* Name including trailing NUL. */
-                                    {
-                                        size_t nlen = strlen (s->name) + 1;
-                                        if (bfd_write (s->name, nlen, abfd) != (bfd_size_type) nlen)
-                                            return false;
-                                    }
-                                }
                         }
-                    else
-                        {
-                            /* Fallback: single T main at start address. */
-                            const char *name = "main";
-                            bfd_vma aval = abfd->start_address;
-                            if (is64)
-                                {
-                                    uint32_t hi = (uint32_t) (aval >> 32);
-                                    uint32_t lo = (uint32_t) (aval & 0xffffffffu);
-                                    bfd_byte w[8];
-                                    bfd_putb32 (hi, w);
-                                    bfd_putb32 (lo, w + 4);
-                                    if (bfd_write (w, 8, abfd) != 8)
-                                        return false;
-                                }
-                            else
-                                {
-                                    uint32_t lo = (uint32_t) (aval & 0xffffffffu);
-                                    bfd_byte w[4];
-                                    bfd_putb32 (lo, w);
-                                    if (bfd_write (w, 4, abfd) != 4)
-                                        return false;
-                                }
-                            uint8_t type_plus = (uint8_t) ('T' + 0x80);
-                            if (bfd_write (&type_plus, 1, abfd) != 1)
-                                return false;
-                            {
-                                size_t nlen = strlen (name) + 1;
-                                if (bfd_write (name, nlen, abfd) != (bfd_size_type) nlen)
-                                    return false;
-                            }
-                        }
-            }
 
         /* Note: BSS section is not written (zero-initialized at runtime). */
     

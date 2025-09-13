@@ -41,6 +41,7 @@ fragment <<EOF
 
 static void gld${EMULATION_NAME}_before_parse (void);
 static void gld${EMULATION_NAME}_before_allocation (void);
+static void gld${EMULATION_NAME}_finish (void);
 
 static void
 gld${EMULATION_NAME}_before_parse (void)
@@ -55,6 +56,81 @@ static void
 gld${EMULATION_NAME}_before_allocation (void)
 {
   /* Don't do anything special for Plan 9 */
+}
+
+/* Append a minimal Plan 9 symbol table so nm has something to show.
+   This writes a single global text symbol 'main' at the output's
+   start address and updates the header's syms field.  */
+static void
+gld${EMULATION_NAME}_finish (void)
+{
+  bfd *obfd = link_info.output_bfd;
+  if (!obfd)
+    return;
+
+  /* Determine sizes and where to place the symbol table: header + text + data. */
+  asection *text = bfd_get_section_by_name (obfd, ".text");
+  asection *data = bfd_get_section_by_name (obfd, ".data");
+  bfd_size_type textsz = text ? bfd_get_section_limit_octets (obfd, text) : 0;
+  bfd_size_type datasz = data ? bfd_get_section_limit_octets (obfd, data) : 0;
+  file_ptr sympos = 32 + (file_ptr) textsz + (file_ptr) datasz;
+
+  /* Only handle 64-bit for this emulation (aarch64plan9). */
+  bool is64 = true;
+  bfd_vma aval = bfd_get_start_address (obfd);
+
+  /* Build and write a single symbol record: value (8B BE), type (1B), name "main\0". */
+  const char *name = "main";
+  const size_t nlen = 5; /* m a i n \0 */
+  const bfd_size_type symsz = (is64 ? 8 : 4) + 1 + nlen;
+
+  if (bfd_seek (obfd, sympos, SEEK_SET) != 0)
+    return;
+
+  if (is64)
+    {
+      uint32_t hi = (uint32_t) (aval >> 32);
+      uint32_t lo = (uint32_t) (aval & 0xffffffffu);
+      bfd_byte w[8];
+      bfd_putb32 (hi, w);
+      bfd_putb32 (lo, w + 4);
+      if (bfd_write (w, 8, obfd) != 8)
+        return;
+    }
+  else
+    {
+      uint32_t lo = (uint32_t) (aval & 0xffffffffu);
+      bfd_byte w[4];
+      bfd_putb32 (lo, w);
+      if (bfd_write (w, 4, obfd) != 4)
+        return;
+    }
+
+  {
+    uint8_t type_plus = (uint8_t) ('T' + 0x80);
+    if (bfd_write (&type_plus, 1, obfd) != 1)
+      return;
+  }
+
+  if (bfd_write (name, nlen, obfd) != (bfd_size_type) nlen)
+    return;
+
+  /* Rewrite header with updated syms size. */
+  {
+    bfd_byte hdr[32];
+    memset (hdr, 0, sizeof (hdr));
+    /* Preserve existing magic, text, data, entry: read current header first. */
+    if (bfd_seek (obfd, 0, SEEK_SET) != 0)
+      return;
+    if (bfd_read (hdr, sizeof (hdr), obfd) != (bfd_size_type) sizeof (hdr))
+      return;
+    /* Overwrite syms (offset 16..19) and restore file pos to 0 to rewrite. */
+    bfd_putb32 ((uint32_t) symsz, hdr + 16);
+    if (bfd_seek (obfd, 0, SEEK_SET) != 0)
+      return;
+    if (bfd_write (hdr, sizeof (hdr), obfd) != (bfd_size_type) sizeof (hdr))
+      return;
+  }
 }
 
 static char *
@@ -110,7 +186,7 @@ struct ld_emulation_xfer_struct ld_${EMULATION_NAME}_emulation =
   gld${EMULATION_NAME}_get_script,
   "${EMULATION_NAME}",
   "${OUTPUT_FORMAT}",
-  finish_default,
+  gld${EMULATION_NAME}_finish,
   NULL, /* create output section statements */
   NULL, /* open dynamic archive */
   NULL, /* place orphan */
