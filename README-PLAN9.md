@@ -94,6 +94,16 @@ Or scan all executables in the default samples dir:
 tools/smoke_plan9_scan.sh
 ```
 
+## Documentation
+
+- docs/9front-executable-files.md — 9front native executable layout, header fields, symbol blob and LC encoding.
+- docs/9front-object-files.md — Plan 9 object stream format, ANAME/ASIGNAME, zaddr encoding, archives.
+- docs/9front-runtime-library.md — dlm (dynamic module) import/relocation table format and decoding.
+- docs/9front-syscalls.csv — syscall numbers table (CSV).
+- docs/9front-syscalls.json — syscall numbers table (JSON).
+- docs/9front-syscalls.md — syscall overview and references to man pages.
+- docs/plan9-aarch64-analysis.md — analysis notes and sample inspection for ARM64 on 9front.
+
 ## License
 
 Same as GNU Binutils (GPL v3+)
