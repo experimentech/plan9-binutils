@@ -11,47 +11,40 @@ This is GNU Binutils with added support for Plan 9 object files and executables.
 - **power** - Plan 9 PowerPC
 - **power64** - Plan 9 PowerPC 64-bit
 
-## Features
+## Current status (Plan 9 ARM64)
 
-- **objdump**: Disassemble Plan 9 executables
-- **objcopy**: Convert between Plan 9 and other formats
-- **gas**: Assemble for Plan 9 targets
-- **ld**: Link Plan 9 objects
+- Readers (BFD): Plan 9 executables and objects are recognized as `plan9-arm64`.
+- Tools: `objdump`, `nm`, `strings`, etc. work on Plan 9 AArch64 executables (sections, symbols, disassembly).
+- Assembler (gas): AArch64 Plan 9 build compiles with non-ELF/COFF code paths guarded.
+- Writer paths: minimal object writer stubs exist (ongoing work; not a focus of this snapshot).
 
-## Building
+Other Plan 9 architectures may be wired in similarly, but ARM64 is the focus of the current work.
 
-Automated bootstrap (preferred):
+## Building (out-of-tree)
 
-```bash
-# Optionally set DESTDIR and PREFIX
-export PREFIX=/usr/local
-export DESTDIR=/tmp/p9b-out   # optional
-
-./bootstrap.sh
-```
-
-Or standard GNU Binutils build process:
+Recommended out-of-tree build for Plan 9 ARM64 tools (binutils only):
 
 ```bash
-./configure --prefix=/usr/local
-make -j$(nproc)
-make install
+mkdir -p build-plan9-aarch64
+cd build-plan9-aarch64
+../configure \
+	--target=aarch64-unknown-plan9 \
+	--disable-nls \
+	--disable-werror
+
+make -j$(nproc) all-binutils
 ```
+
+Key outputs will be under `build-plan9-aarch64/binutils/` (e.g. `objdump`, `nm-new`).
 
 ## Usage Examples
 
 ```bash
-# Disassemble Plan 9 ARM64 executable
-objdump -d program.7.out
+# Disassemble a Plan 9 ARM64 executable using the freshly built tools
+build-plan9-aarch64/binutils/objdump -f -h -d ../arm64_9front_samples/arm64_executables/catclock
 
-# Convert Plan 9 executable to ELF
-objcopy -O elf64-little program.7.out program.elf
-
-# Assemble for Plan 9 ARM64
-as --64 -o program.7 program.s
-
-# Link Plan 9 objects
-ld -m plan9_arm64 -o program.7.out program.7
+# List symbols with nm
+build-plan9-aarch64/binutils/nm-new -n ../arm64_9front_samples/arm64_executables/catclock | head
 ```
 
 ## Plan 9 File Extensions
@@ -77,22 +70,29 @@ The Plan 9 support is implemented through:
 - The build is fully automated. You no longer need to patch generated files.
 - Legacy helper scripts that edited generated files have been deprecated.
 
-## Smoke Tests
+## Smoke tests
 
-There is a lightweight smoke test that exercises objdump/nm/strings/disassembly on a sample set of Plan 9 ARM64 binaries and objects.
+Two helper scripts live under `tools/`:
 
-Run it from the repo root:
+- `tools/smoke_plan9_binutils.sh` — quick check against a small set of samples (headers, sections, nm symbols). Good for fast sanity.
+- `tools/smoke_plan9_scan.sh` — broader scan across a samples directory.
+
+Defaults assume:
+
+- Build dir: `build-plan9-aarch64/binutils`
+- Sample executables: `../arm64_9front_samples/arm64_executables`
+
+Run a quick check:
 
 ```bash
-make smoke
+tools/smoke_plan9_binutils.sh
 ```
 
-Environment variables you can override:
+Or scan all executables in the default samples dir:
 
-- `BUILD_DIR` (default: `./build`) — path to the binutils build tree with tools such as `binutils/objdump`.
-- `SAMPLES_DIR` (default: `../arm64_9front_samples`) — path to sample files (executables/objects).
-
-The script automatically skips text/scripts and non-Plan 9 object files; genuine tool issues on real Plan 9 executables will still be reported as failures.
+```bash
+tools/smoke_plan9_scan.sh
+```
 
 ## License
 
