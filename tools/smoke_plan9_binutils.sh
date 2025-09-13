@@ -30,7 +30,10 @@ if [[ ! -x "$OBJDUMP" || ! -x "$NM" ]]; then
   exit 1
 fi
 
-read -r -a samples <<< "${SAMPLES:-catclock md sudoku doom}"
+{
+  local IFS=' '
+  read -r -a samples <<< "${SAMPLES:-catclock md sudoku doom}"
+}
 pass=0
 fail=0
 skip=0
