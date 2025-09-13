@@ -55,7 +55,14 @@ static const aarch64_feature_set *march_cpu_opt = NULL;
 static const aarch64_feature_set cpu_default = AARCH64_ARCH_FEATURES (V8A);
 
 /* Currently active instruction sequence.  */
+/* Instruction sequencing support; non-ELF/COFF builds still need a non-NULL
+  insn_sequence pointer for libopcodes helpers. */
+#if !defined(OBJ_ELF) && !defined(OBJ_COFF)
+static aarch64_instr_sequence aarch64_dummy_insn_sequence;
+static aarch64_instr_sequence *insn_sequence = &aarch64_dummy_insn_sequence;
+#else
 static aarch64_instr_sequence *insn_sequence = NULL;
+#endif
 
 #ifdef OBJ_ELF
 /* Pre-defined "_GLOBAL_OFFSET_TABLE_"	*/
@@ -8723,6 +8730,13 @@ md_assemble (char *str)
   struct aarch64_segment_info_type *tc_seg_info;
   aarch64_inst *inst_base;
   unsigned saved_cond;
+
+#if !defined(OBJ_ELF) && !defined(OBJ_COFF)
+  /* Ensure dummy instruction sequence is reset at the start of assembling
+     a new instruction for non-ELF/COFF builds. */
+  memset (&aarch64_dummy_insn_sequence, 0, sizeof (aarch64_dummy_insn_sequence));
+  insn_sequence = &aarch64_dummy_insn_sequence;
+#endif
 
   /* Align the previous label if needed.  */
   if (last_label_seen != NULL)

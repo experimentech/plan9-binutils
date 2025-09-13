@@ -41,6 +41,7 @@ const struct format_ops plan9_format_ops =
   0,	/* begin.  */
   0,	/* end.  */
   0,	/* app_file.  */
+  0,	/* assign_symbol.  */
   0,	/* frob_symbol.  */
   0,	/* frob_file.  */
   0,	/* frob_file_before_adjust.  */
@@ -54,8 +55,9 @@ const struct format_ops plan9_format_ops =
   0,	/* s_set_other.  */
   0,	/* s_get_desc.  */
   0,	/* s_set_desc.  */
+  0,	/* s_get_type.  */
+  0,	/* s_set_type.  */
   0,	/* copy_symbol_attributes.  */
-  0,	/* generate_asm_lineno.  */
   0,	/* process_stab.  */
   0,	/* separate_stab_sections.  */
   0,	/* init_stab_section.  */
