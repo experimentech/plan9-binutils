@@ -14,16 +14,21 @@
 
 #include "bfd.h"
 
-/* Plan 9 address structure - represents parsed operand */
+/* Mirror minimal constants needed from 7.out.h */
+#ifndef NSNAME
+#define NSNAME 8
+#endif
+
+/* Plan 9 address structure for arm64 (.7) - mirrors 9front libmach 7obj.c */
 struct plan9_address {
-    uint8_t type_flags;      /* T_* flags */
-    uint8_t index;           /* Register/index number */
-    uint8_t scale;           /* Scale factor */
-    uint8_t addr_type;       /* D_* address type */
-    uint64_t offset;         /* Offset value (32 or 64-bit) */
-    asymbol *symbol;         /* Symbol reference */
-    uint8_t fconst[8];       /* IEEE float constant */
-    uint8_t sconst[8];       /* String constant */
+    uint8_t type;        /* D_* address type */
+    uint8_t reg;         /* register (ignored for now) */
+    uint8_t sym_index;   /* local symbol table index */
+    uint8_t name;        /* name/type classification (D_EXTERN, D_STATIC, etc) */
+    int64_t offset;      /* 32-bit offset (sign-extended), or 64-bit for D_DCONST */
+    asymbol *symbol;     /* Resolved pointer to local symbol if any */
+    uint8_t fconst[8];   /* IEEE float constant (when type==D_FCONST) */
+    uint8_t sconst[NSNAME]; /* Short string constant (when type==D_SCONST) */
 };
 
 /* External declarations */
@@ -42,6 +47,12 @@ void plan9obj_print_symbol (bfd *abfd, void *filep, asymbol *sym, bfd_print_symb
 /* Object creation and writing for plan9-object backend. */
 bool plan9obj_mkobject (bfd *abfd);
 bool plan9obj_write_object_contents (bfd *abfd);
+
+/* Relocation interfaces for the plan9-object backend. */
+long plan9obj_get_reloc_upper_bound (bfd *abfd, asection *sec);
+long plan9obj_canonicalize_reloc (bfd *abfd, asection *sec, arelent **relpp, asymbol **symbols);
+reloc_howto_type *plan9obj_bfd_reloc_type_lookup (bfd *abfd, bfd_reloc_code_real_type code);
+reloc_howto_type *plan9obj_bfd_reloc_name_lookup (bfd *abfd, const char *name);
 
 
 #endif /* _PLAN9OBJ_H */

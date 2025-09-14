@@ -19,9 +19,9 @@
    small fallback object recognizer here. If plan9obj.c is present it becomes
    unused but harmless. Optionally enable plan9obj integration by defining
    ENABLE_PLAN9OBJ at build time and providing plan9obj.c. */
-#ifdef ENABLE_PLAN9OBJ
+/* Always include plan9obj.h for prototypes when wiring relocation jump table
+    and to use its object recognizer. */
 #include "plan9obj.h"
-#endif
 
 
 /* Plan 9 magic numbers - from 9front/sys/include/a.out.h */
@@ -109,7 +109,6 @@ plan9_fallback_object_p (bfd *abfd)
     /* Check for the two magic byte arrangements identifying a Plan 9 object. */
     if ((buf[2] == 1 && buf[3] == '<') || (buf[3] == 1 && buf[4] == '<'))
     {
-        bfd_set_format (abfd, bfd_object);
         bfd_set_arch_mach (abfd, bfd_arch_unknown, 0);
         return _bfd_no_cleanup;
     }
@@ -187,8 +186,7 @@ static bfd_cleanup plan9_object_p_magic (bfd *abfd, uint32_t expected_magic)
             /* Set the start address */
             abfd->start_address = bfd_getb32 (&hdr.entry);
             
-            /* Set format and report success */
-            bfd_set_format (abfd, bfd_object);
+            /* Report success; format is already set by framework. */
             return _bfd_no_cleanup;
         }
     }
@@ -1104,22 +1102,8 @@ plan9_bfd_final_link (bfd *abfd, struct bfd_link_info *info)
 #define plan9obj_bfd_link_hide_symbol           _bfd_generic_link_hide_symbol
 #define plan9obj_bfd_define_start_stop          bfd_generic_define_start_stop
 
-#ifdef ENABLE_PLAN9OBJ
-/* plan9obj symbol-table helpers: use the backend implementations to expose
-    synthesized symbols from Plan 9 opcode streams. */
-long plan9obj_get_symtab_upper_bound (bfd *);
-long plan9obj_canonicalize_symtab (bfd *, asymbol **);
-asymbol *plan9obj_make_empty_symbol (bfd *);
-void plan9obj_print_symbol (bfd *, void *, asymbol *, bfd_print_symbol_type);
-void plan9obj_get_symbol_info (bfd *, asymbol *, symbol_info *);
-#else
-/* Minimal fallbacks when plan9obj.c is not linked: empty symtab. */
-static long plan9obj_get_symtab_upper_bound (bfd *abfd ATTRIBUTE_UNUSED) { return sizeof (asymbol *); }
-static long plan9obj_canonicalize_symtab (bfd *abfd ATTRIBUTE_UNUSED, asymbol **syms) { if (syms) syms[0] = NULL; return 0; }
-static asymbol *plan9obj_make_empty_symbol (bfd *abfd) { return plan9_make_empty_symbol (abfd); }
-static void plan9obj_print_symbol (bfd *abfd, void *filep, asymbol *symbol, bfd_print_symbol_type how) { plan9_print_symbol (abfd, filep, symbol, how); }
-static void plan9obj_get_symbol_info (bfd *abfd, asymbol *symbol, symbol_info *ret) { plan9_get_symbol_info (abfd, symbol, ret); }
-#endif
+/* plan9obj symbol-table helpers are provided by plan9obj.c; prototypes
+   come from plan9obj.h which we include above. */
 #define plan9obj_get_symbol_version_string _bfd_nosymbols_get_symbol_version_string
 #define plan9obj_bfd_is_local_label_name  bfd_generic_is_local_label_name
 #define plan9obj_bfd_is_target_special_symbol _bfd_bool_bfd_asymbol_false
@@ -1131,6 +1115,12 @@ static void plan9obj_get_symbol_info (bfd *abfd, asymbol *symbol, symbol_info *r
 #define plan9obj_bfd_make_debug_symbol    _bfd_nosymbols_bfd_make_debug_symbol
 #define plan9obj_read_minisymbols         _bfd_generic_read_minisymbols
 #define plan9obj_minisymbol_to_symbol     _bfd_generic_minisymbol_to_symbol
+/* Relocation jump table wiring for plan9-object backend */
+#define plan9obj_get_reloc_upper_bound     plan9obj_get_reloc_upper_bound
+#define plan9obj_canonicalize_reloc        plan9obj_canonicalize_reloc
+#define plan9obj_bfd_reloc_type_lookup     plan9obj_bfd_reloc_type_lookup
+#define plan9obj_bfd_reloc_name_lookup     plan9obj_bfd_reloc_name_lookup
+#define plan9obj_set_reloc                  _bfd_generic_set_reloc
 /* Define targets for other architectures */
 PLAN9_TARGET(amd64, S_MAGIC, bfd_arch_i386, bfd_mach_x86_64);
 PLAN9_TARGET(386, I_MAGIC, bfd_arch_i386, bfd_mach_i386_i386);
@@ -1143,11 +1133,7 @@ PLAN9_TARGET(power64, T_MAGIC, bfd_arch_powerpc, bfd_mach_ppc64);
    Phase 1: symbol + section sizing only (no relocations). */
 /* Select the recognizer: prefer plan9obj.c when enabled, otherwise use
    the tiny local fallback that only checks the opcode prefix. */
-#ifdef ENABLE_PLAN9OBJ
 #define PLAN9OBJ_OBJECT_P_FN plan9_object_p
-#else
-#define PLAN9OBJ_OBJECT_P_FN plan9_fallback_object_p
-#endif
 const bfd_target plan9_object_vec = {
     "plan9-object",                 /* Name */
     bfd_target_unknown_flavour,
@@ -1166,7 +1152,9 @@ const bfd_target plan9_object_vec = {
     bfd_getl64, bfd_getl_signed_64, bfd_putl64,
     bfd_getl32, bfd_getl_signed_32, bfd_putl32,
     bfd_getl16, bfd_getl_signed_16, bfd_putl16,
-    { PLAN9OBJ_OBJECT_P_FN, bfd_generic_archive_p, _bfd_dummy_target, _bfd_dummy_target },
+     /* Recognize only object files here. Do not advertise archive support,
+         or BFD may misclassify raw .7 objects as archives. */
+     { _bfd_dummy_target, PLAN9OBJ_OBJECT_P_FN, _bfd_dummy_target, _bfd_dummy_target },
     { _bfd_bool_bfd_false_error, _bfd_bool_bfd_false_error, _bfd_generic_mkarchive, _bfd_bool_bfd_false_error },
     { _bfd_bool_bfd_false_error, _bfd_bool_bfd_false_error, _bfd_write_archive_contents, _bfd_bool_bfd_false_error },
         BFD_JUMP_TABLE_GENERIC (_bfd_generic), /* close/free stays generic */
@@ -1174,7 +1162,7 @@ const bfd_target plan9_object_vec = {
     BFD_JUMP_TABLE_CORE (_bfd_nocore),
         BFD_JUMP_TABLE_ARCHIVE (_bfd_archive_bsd),
         BFD_JUMP_TABLE_SYMBOLS (plan9obj),
-    BFD_JUMP_TABLE_RELOCS (_bfd_norelocs),
+    BFD_JUMP_TABLE_RELOCS (plan9obj),
         BFD_JUMP_TABLE_WRITE (_bfd_generic), /* set_section_contents ok */
     BFD_JUMP_TABLE_LINK (plan9obj),
     BFD_JUMP_TABLE_DYNAMIC (_bfd_nodynamic),
