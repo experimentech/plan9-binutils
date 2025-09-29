@@ -231,9 +231,75 @@ void plan9obj_get_symbol_info (bfd *, asymbol *, symbol_info *);
 void plan9obj_print_symbol (bfd *abfd, void *filep, asymbol *symbol, bfd_print_symbol_type how);
 static bool parse_plan9_object (bfd *abfd);
 static reloc_howto_type *plan9obj_aarch64_howto_from_code (bfd_reloc_code_real_type code);
-static void plan9_dname_str (int d, char *buf, size_t buflen);
-static bool plan9_should_replace_symname (const char *oldn, const char *newn);
+static void plan9_dname_str (int d, char *buf, size_t buflen) __attribute__((unused));
+static void plan9_dname_str (int d, char *buf, size_t buflen)
+{
+    if (!buf || buflen == 0) return;
+    switch (d) {
+        case D_OREG:    snprintf (buf, buflen, "D_OREG"); break;
+        case D_STATIC:  snprintf (buf, buflen, "D_STATIC"); break;
+        case D_EXTERN:  snprintf (buf, buflen, "D_EXTERN"); break;
+        case D_CONST:   snprintf (buf, buflen, "D_CONST"); break;
+        case D_DCONST:  snprintf (buf, buflen, "D_DCONST"); break;
+        case D_SCONST:  snprintf (buf, buflen, "D_SCONST"); break;
+        case D_REG:     snprintf (buf, buflen, "D_REG"); break;
+        case D_SP:      snprintf (buf, buflen, "D_SP"); break;
+        case D_FREG:    snprintf (buf, buflen, "D_FREG"); break;
+        case D_VREG:    snprintf (buf, buflen, "D_VREG"); break;
+        case D_ROFF:    snprintf (buf, buflen, "D_ROFF"); break;
+        case D_BRANCH:  snprintf (buf, buflen, "D_BRANCH"); break;
+        default:        snprintf (buf, buflen, "D_%d", d); break;
+    }
+}
 
+/* Plan 9 object file private helper: decide if a new symbol name should replace an existing one.
+   Heuristic rules (conservative):
+   - If no old name, accept new.
+   - If old is path-like (< or contains '/') prefer new.
+   - If old contains '$' and new does not -> prefer new.
+   - If new contains '$' and old does not -> do not replace.
+   - If old starts with '.' (like .string) and new does not -> prefer new.
+   - Otherwise keep the existing name to preserve stability. */
+static inline bool
+plan9_is_word (const char *s)
+{
+    if (!s || s[0] == '\0') return false;
+    if (s[0] == '.') return false;
+    for (const char *p = s; *p; ++p) {
+        char c = *p;
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'))
+            return false;
+    }
+    return true;
+}
+
+static bool
+plan9_should_replace_symname (const char *oldn, const char *newn)
+{
+    if (!newn) return false;
+    if (!oldn) return true;
+
+    bool old_is_path_like = (strchr(oldn, '/') != NULL) || (oldn[0] == '<');
+    bool new_is_path_like = (strchr(newn, '/') != NULL) || (newn[0] == '<');
+
+    bool old_word = plan9_is_word (oldn);
+    bool new_word = plan9_is_word (newn);
+
+    /* Replace if the old name is clearly path-/table-like and new is a tidy word. */
+    if ((old_is_path_like || strchr(oldn, '$') || oldn[0] == '.') && new_word && !new_is_path_like)
+        return true;
+
+    /* Do not replace a good, word-like existing name with another name that is not strictly better. */
+    if (old_word && new_word)
+        return false;
+
+    /* If old is not word-like but new is word-like prefer new. */
+    if (!old_word && new_word)
+        return true;
+
+    /* Otherwise, default to keeping the existing name for stability. */
+    return false;
+}
 
 /* Object file detection - implements 9front isobjfile() logic */
 bfd_cleanup
@@ -367,7 +433,11 @@ parse_plan9_address (bfd *abfd, unsigned char *data, unsigned int offset,
         }
     }
 
-    if (addr->sym_index < NSYM && local_syms[addr->sym_index])
+    /* sym_index is an 8-bit index (0..255); NSYM is 256 so the explicit
+       bound check is redundant and triggers -Wtype-limits. Rely on the
+       resolved local_syms[] lookup (which is sized NSYM) for safety. */
+    (void) abfd; /* parameter unused in this parser helper */
+    if (local_syms[addr->sym_index])
         addr->symbol = local_syms[addr->sym_index];
 
     return pos - offset;
@@ -377,24 +447,18 @@ parse_plan9_address (bfd *abfd, unsigned char *data, unsigned int offset,
 static bool
 parse_plan9_object (bfd *abfd)
 {
-    unsigned char *data;
-    size_t size;
-    unsigned int pos = 0;
     /* Parse opcode stream */
-    unsigned int count_atext = 0, count_adata = 0, count_aglobl = 0, count_other = 0;
     asymbol *local_syms[NSYM] = {0};
-    /* Track the ANAME/ASIGNAME type byte for possible heuristics later. */
-    unsigned char local_types[NSYM] = {0};
-    /* We'll collect only meaningful symbols (with a section) to expose. */
-    asymbol *collected[256];
-    unsigned int collected_count = 0;
-    
+    /* NOTE: counters, local_types[], and collected[] were removed to
+       silence warnings while they are not used. They may be reintroduced
+       later when heuristics/collection kick in. */
+
     /* Read entire file into memory */
-    size = bfd_get_file_size (abfd);
+    size_t size = bfd_get_file_size (abfd);
     if (size == 0 || size > 0x10000000) /* Sanity check: 256MB max */
         return false;
     
-    data = (unsigned char *) bfd_malloc (size);
+    unsigned char *data = (unsigned char *) bfd_malloc (size);
     if (!data)
         return false;
     
@@ -436,7 +500,7 @@ parse_plan9_object (bfd *abfd)
                         unsigned int nend = nstart;
                         while (nend < size && (nend - nstart) < 512 && data[nend] != 0)
                             nend++;
-                        if (nend < size && o < NSYM && v < 0x80 && (nend > nstart)) {
+                        if (nend < size && v < 0x80 && (nend > nstart)) {
                             bool ok = true;
                             for (unsigned int i = nstart; i < nend; i++) {
                                 unsigned char ch = data[i];
@@ -475,7 +539,8 @@ parse_plan9_object (bfd *abfd)
                                                      opcode_pos, (unsigned int) o, oldn?oldn:"(null)", cand_name);
                                         plan9obj_emit_event (1, opcode_pos, o, "ANAME", "kept", oldn?oldn:NULL, cand_name);
                                     }
-                                    local_types[o] = v;
+                                    /* local_types[] intentionally not stored while
+                                       we don't use the collected type info. */
                                     p = nend + 1;
                                     parsed_name = true;
                                 } else {
@@ -498,7 +563,7 @@ parse_plan9_object (bfd *abfd)
                         unsigned int nend = nstart;
                         while (nend < size && (nend - nstart) < 512 && data[nend] != 0)
                             nend++;
-                        if (nend < size && o < NSYM && v < 0x80 && (nend > nstart)) {
+                        if (nend < size && v < 0x80 && (nend > nstart)) {
                             bool ok = true;
                             for (unsigned int i = nstart; i < nend; i++) {
                                 unsigned char ch = data[i];
@@ -554,9 +619,12 @@ parse_plan9_object (bfd *abfd)
                  if (parsed_name)
                      continue;
                  p = save;
-                 if (in_prefix) in_prefix = false;
+                 /* Non-name opcode encountered; leave payload handling to the
+                    existing branch below.  We'll clear the "in_prefix" flag
+                    once at the end of the loop so both failed-parses and
+                    non-name opcodes behave identically without duplicated
+                    assignments. */
              } else {
-                 if (in_prefix) in_prefix = false;
                  /* Skip the record payload without performing any symbol/reloc work.
                     Use the same address-parsing helper to advance over operands. */
                  if (opcode == AEND)
@@ -580,12 +648,18 @@ parse_plan9_object (bfd *abfd)
                  /* Continue to next record */
              }
          }
+         /* At end-of-iteration: if we fell through (i.e. not a parsed name)
+            clear the prefix flag so subsequent non-name records don't
+            repeatedly consider we are still in the name-prefix area. This
+            centralizes the assignment for clarity. */
+         if (in_prefix) in_prefix = false;
+         /* After finishing the pass1 scan, continue... */
      }
 
     /* --- PASS 2: full parse, now that local_syms[] is populated --- */
     {
         unsigned int p = 0;
-        unsigned int count_atext2 = 0, count_adata2 = 0, count_aglobl2 = 0, count_other2 = 0;
+        /* per-pass counters removed until needed */
         bool in_name_prefix2 = true;
         /* Temporary recorded relocation table: we can't finalize arelent->sym_ptr_ptr
            until we've allocated the exported symbol vector, so record reloc targets
@@ -616,7 +690,7 @@ parse_plan9_object (bfd *abfd)
                         unsigned int nend = nstart;
                         while (nend < size && (nend - nstart) < 512 && data[nend] != 0)
                             nend++;
-                        if (nend < size && o < NSYM && v < 0x80 && (nend > nstart)) {
+                        if (nend < size && v < 0x80 && (nend > nstart)) {
                             bool ok = true;
                             for (unsigned int i = nstart; i < nend; i++) {
                                 unsigned char ch = data[i];
@@ -651,7 +725,6 @@ parse_plan9_object (bfd *abfd)
                                                      opcode_pos, (unsigned int) o, local_syms[o]?local_syms[o]->name:"(null)");
                                         plan9obj_emit_event (2, opcode_pos, o, "ANAME", "already_has", local_syms[o]?local_syms[o]->name:NULL, NULL);
                                     }
-                                    local_types[o] = v;
                                     p = nend + 1;
                                     parsed_name = true;
                                 }
@@ -667,7 +740,7 @@ parse_plan9_object (bfd *abfd)
                         unsigned int nend = nstart;
                         while (nend < size && (nend - nstart) < 512 && data[nend] != 0)
                             nend++;
-                        if (nend < size && o < NSYM && v < 0x80 && (nend > nstart)) {
+                        if (nend < size && v < 0x80 && (nend > nstart)) {
                             bool ok = true;
                             for (unsigned int i = nstart; i < nend; i++) {
                                 unsigned char ch = data[i];
@@ -723,9 +796,9 @@ parse_plan9_object (bfd *abfd)
                  if (parsed_name)
                      continue;
                  p = save;
-                 if (in_name_prefix2) in_name_prefix2 = false;
+                 /* Non-name opcode encountered; payload parsing below. We'll
+                    clear the prefix flag once at the end of the loop. */
              } else {
-                 if (in_name_prefix2) in_name_prefix2 = false;
                  /* Skip the record payload without performing any symbol/reloc work.
                     Use the same address-parsing helper to advance over operands. */
                  if (opcode == AEND)
@@ -768,12 +841,12 @@ parse_plan9_object (bfd *abfd)
                     int target_idx = -1;
                     unsigned int target_addr = 0;
                     int64_t target_addend = 0;
-                    if (src.symbol && src.sym_index < NSYM) {
+                    if (src.symbol) {
                         /* Use second operand as the symbol target. */
                         target_idx = (int) src.sym_index;
                         target_addr = (unsigned int) dest.offset;
                         target_addend = src.offset;
-                    } else if (dest.symbol && dest.sym_index < NSYM) {
+                    } else if (dest.symbol) {
                         /* Some ADATA variants put the symbol in the first operand. */
                         target_idx = (int) dest.sym_index;
                         target_addr = (unsigned int) src.offset;
@@ -817,9 +890,13 @@ parse_plan9_object (bfd *abfd)
                  /* Continue to next record */
              }
          }
-        /* After finishing the pass2 scan, convert recorded relocation entries
-           into real arelent structures and materialize the exported symbol
-           vector so canonicalize_* functions can access them. */
+         /* At end-of-iteration: centralize clearing of the name-prefix flag
+            for pass2 as well. If we parsed a name we 'continue' earlier and
+            the flag remains set; otherwise we clear it here exactly once. */
+         if (in_name_prefix2) in_name_prefix2 = false;
+         /* After finishing the pass2 scan, convert recorded relocation entries
+            into real arelent structures and materialize the exported symbol
+            vector so canonicalize_* functions can access them. */
         /* Build symbol vector and mapping from original ANAME index -> symbol vector index. */
         int sym_map[NSYM];
         memset (sym_map, -1, sizeof (sym_map));
@@ -1023,74 +1100,4 @@ plan9obj_bfd_reloc_name_lookup (bfd *abfd ATTRIBUTE_UNUSED, const char *name)
     if (strcmp (name, "CALL26") == 0 || strcmp (name, "AARCH64_CALL26") == 0)
         return &plan9obj_aarch64_call26_howto;
     return NULL;
-}
-
-static void
-plan9_dname_str (int d, char *buf, size_t buflen)
-{
-    if (!buf || buflen == 0) return;
-    switch (d) {
-        case D_OREG:    snprintf (buf, buflen, "D_OREG"); break;
-        case D_STATIC:  snprintf (buf, buflen, "D_STATIC"); break;
-        case D_EXTERN:  snprintf (buf, buflen, "D_EXTERN"); break;
-        case D_CONST:   snprintf (buf, buflen, "D_CONST"); break;
-        case D_DCONST:  snprintf (buf, buflen, "D_DCONST"); break;
-        case D_SCONST:  snprintf (buf, buflen, "D_SCONST"); break;
-        case D_REG:     snprintf (buf, buflen, "D_REG"); break;
-        case D_SP:      snprintf (buf, buflen, "D_SP"); break;
-        case D_FREG:    snprintf (buf, buflen, "D_FREG"); break;
-        case D_VREG:    snprintf (buf, buflen, "D_VREG"); break;
-        case D_ROFF:    snprintf (buf, buflen, "D_ROFF"); break;
-        case D_BRANCH:  snprintf (buf, buflen, "D_BRANCH"); break;
-        default:        snprintf (buf, buflen, "D_%d", d); break;
-    }
-}
-
-/* Plan 9 object file private helper: decide if a new symbol name should replace an existing one.
-   Heuristic rules (conservative):
-   - If no old name, accept new.
-   - If old is path-like (< or contains '/') prefer new.
-   - If old contains '$' and new does not -> prefer new.
-   - If new contains '$' and old does not -> do not replace.
-   - If old starts with '.' (like .string) and new does not -> prefer new.
-   - Otherwise keep the existing name to preserve stability. */
-static inline bool
-plan9_is_word (const char *s)
-{
-    if (!s || s[0] == '\0') return false;
-    if (s[0] == '.') return false;
-    for (const char *p = s; *p; ++p) {
-        char c = *p;
-        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'))
-            return false;
-    }
-    return true;
-}
-
-static bool
-plan9_should_replace_symname (const char *oldn, const char *newn)
-{
-    if (!newn) return false;
-    if (!oldn) return true;
-
-    bool old_is_path_like = (strchr(oldn, '/') != NULL) || (oldn[0] == '<');
-    bool new_is_path_like = (strchr(newn, '/') != NULL) || (newn[0] == '<');
-
-    bool old_word = plan9_is_word (oldn);
-    bool new_word = plan9_is_word (newn);
-
-    /* Replace if the old name is clearly path-/table-like and new is a tidy word. */
-    if ((old_is_path_like || strchr(oldn, '$') || oldn[0] == '.') && new_word && !new_is_path_like)
-        return true;
-
-    /* Do not replace a good, word-like existing name with another name that is not strictly better. */
-    if (old_word && new_word)
-        return false;
-
-    /* If old is not word-like but new is word-like prefer new. */
-    if (!old_word && new_word)
-        return true;
-
-    /* Otherwise, default to keeping the existing name for stability. */
-    return false;
 }
