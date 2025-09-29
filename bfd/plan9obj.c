@@ -36,17 +36,92 @@ plan9obj_dbg (bfd *abfd, const char *fmt, ...)
         return;
 
     va_start (ap, fmt);
-    if (abfd && /* if bfd has a printf-like helper, prefer it */ 0) {
-        /* Placeholder: prefer bfd-specific printing if available. */
-        vfprintf (stderr, fmt, ap);
-    } else {
-        vfprintf (stderr, fmt, ap);
-    }
+    /* Format the incoming message into a local buffer, then pass it to
+       BFD's central error handler so callers (objdump, nm, ld, etc.) can
+       route backend diagnostics through their registered callbacks. We
+       prefix with the bfd pointer using %pB when available to give
+       context similar to other backends. */
+    char msgbuf[2048];
+    vsnprintf (msgbuf, sizeof (msgbuf), fmt, ap);
     va_end (ap);
+
+    if (abfd)
+    {
+        /* Use BFD's error handler which understands %pB and routing. */
+        _bfd_error_handler ("%pB: %s", abfd, msgbuf);
+    }
+    else
+    {
+        _bfd_error_handler ("%s", msgbuf);
+    }
 }
 
 /* Convenience macro to preserve call site brevity; callers must have 'abfd' in scope. */
 #define PLAN9OBJ_DBG(...) plan9obj_dbg (abfd, __VA_ARGS__)
+
+/* Event emission: enable by exporting PLAN9OBJ_EVENTS=1. Events are emitted as
+   compact JSON lines prefixed with 'PLAN9OBJ-EVENT: ' on stderr for machine
+   consumption by the regression tools. */
+static int plan9obj_events_enabled = -1;
+static void plan9obj_events_init (void)
+{
+    const char *e = getenv ("PLAN9OBJ_EVENTS");
+    plan9obj_events_enabled = (e && *e) ? 1 : 0;
+}
+
+static char *plan9obj_json_escape (const char *s, char *buf, size_t buflen)
+{
+    if (!s || buflen == 0) { if (buflen) buf[0] = '\0'; return buf; }
+    char *dst = buf;
+    size_t remaining = buflen;
+    while (*s && remaining > 1) {
+        unsigned char c = (unsigned char) *s++;
+        if (c == '"' || c == '\\') {
+            if (remaining <= 2) break;
+            *dst++ = '\\';
+            *dst++ = (char) c;
+            remaining -= 2;
+        } else if (c >= 0x20 && c != '\n' && c != '\r' && c != '\t') {
+            *dst++ = (char) c;
+            remaining--;
+        } else {
+            if (remaining <= 6) break;
+            int written = snprintf (dst, remaining, "\\u%04x", (int) c);
+            if (written <= 0) break;
+            dst += written;
+            remaining -= (size_t) written;
+        }
+    }
+    *dst = '\0';
+    return buf;
+}
+
+static void plan9obj_emit_event (unsigned int pass, unsigned int opcode_pos, unsigned int idx,
+                                 const char *rec, const char *action,
+                                 const char *oldn, const char *newn)
+{
+    if (plan9obj_events_enabled < 0)
+        plan9obj_events_init ();
+    if (!plan9obj_events_enabled) {
+        /* If explicit event emission not enabled, allow emission when debug
+           diagnostics are enabled (so verbose runs will still produce events).
+           Ensure plan9obj_debug_enabled is initialized similarly to plan9obj_dbg. */
+        if (plan9obj_debug_enabled < 0) {
+            const char *e1 = getenv ("PLAN9OBJ_DEBUG");
+            const char *e2 = getenv ("BFD_VERBOSE");
+            plan9obj_debug_enabled = ((e1 && *e1) || (e2 && *e2)) ? 1 : 0;
+        }
+        if (!plan9obj_debug_enabled)
+            return;
+    }
+
+    char oldbuf[256];
+    char newbuf[256];
+    plan9obj_json_escape (oldn ? oldn : "", oldbuf, sizeof oldbuf);
+    plan9obj_json_escape (newn ? newn : "", newbuf, sizeof newbuf);
+    fprintf (stderr, "PLAN9OBJ-EVENT: {\"pass\":%u,\"pos\":%u,\"idx\":%u,\"rec\":\"%s\",\"action\":\"%s\",\"old\":\"%s\",\"new\":\"%s\"}\n",
+             pass, opcode_pos, idx, rec ? rec : "", action ? action : "", oldbuf, newbuf);
+}
 
 /* Minimal AArch64 relocation howtos for Plan 9 object usage. We only need
      a couple to link simple programs: absolute 64-bit and branch/call 26-bit. */
@@ -99,7 +174,7 @@ static reloc_howto_type plan9obj_aarch64_call26_howto =
 /* Address encoding is fixed-format for arm64; no T_* flags needed here. */
 
 /* Symbol table limits - from *.out.h */
-#define NSYM 50     /* Local symbol table size */
+#define NSYM 256    /* Local symbol table size (expanded to handle real-world .7 files) */
 #define NSNAME 8    /* String constant size */
 
 /* Minimal subset of D_* constants for arm64 from 7.out.h (values verified) */
@@ -156,6 +231,8 @@ void plan9obj_get_symbol_info (bfd *, asymbol *, symbol_info *);
 void plan9obj_print_symbol (bfd *abfd, void *filep, asymbol *symbol, bfd_print_symbol_type how);
 static bool parse_plan9_object (bfd *abfd);
 static reloc_howto_type *plan9obj_aarch64_howto_from_code (bfd_reloc_code_real_type code);
+static void plan9_dname_str (int d, char *buf, size_t buflen);
+static bool plan9_should_replace_symname (const char *oldn, const char *newn);
 
 
 /* Object file detection - implements 9front isobjfile() logic */
@@ -207,10 +284,10 @@ plan9obj_mkobject (bfd *abfd)
     
     /* Create standard sections */
     tdata->text_section = bfd_make_section_with_flags (abfd, ".text",
-        SEC_CODE | SEC_LOAD | SEC_ALLOC | SEC_HAS_CONTENTS);
-    
+        SEC_CODE | SEC_LOAD | SEC_ALLOC | SEC_HAS_CONTENTS | SEC_RELOC);
+
     tdata->data_section = bfd_make_section_with_flags (abfd, ".data", 
-        SEC_DATA | SEC_LOAD | SEC_ALLOC | SEC_HAS_CONTENTS);
+        SEC_DATA | SEC_LOAD | SEC_ALLOC | SEC_HAS_CONTENTS | SEC_RELOC);
     
     tdata->bss_section = bfd_make_section_with_flags (abfd, ".bss",
         SEC_ALLOC);
@@ -303,6 +380,8 @@ parse_plan9_object (bfd *abfd)
     unsigned char *data;
     size_t size;
     unsigned int pos = 0;
+    /* Parse opcode stream */
+    unsigned int count_atext = 0, count_adata = 0, count_aglobl = 0, count_other = 0;
     asymbol *local_syms[NSYM] = {0};
     /* Track the ANAME/ASIGNAME type byte for possible heuristics later. */
     unsigned char local_types[NSYM] = {0};
@@ -332,285 +411,489 @@ parse_plan9_object (bfd *abfd)
     plan9_obj_tdata(abfd)->text_reloc_count = 0;
     plan9_obj_tdata(abfd)->data_reloc_count = 0;
 
-    /* Parse opcode stream */
-    unsigned int count_atext = 0, count_adata = 0, count_aglobl = 0, count_other = 0;
-    bool in_name_prefix = true; /* ANAME/ASIGNAME records usually come first, but can appear anywhere */
-    while (pos + 1 < size) {
-        unsigned int opcode_pos = pos;
-        uint16_t opcode = data[pos] | (data[pos+1] << 8);
-        pos += 2;
+    /* Parse opcode stream: two-pass approach
+       - Pass 1: scan for ANAME/ASIGNAME to populate local_syms/local_types so
+         forward references are resolved.
+       - Pass 2: full parse which sizes sections, collects symbols, and
+         synthesizes relocations. */
 
-        /* Handle ANAME/ASIGNAME records anywhere in the stream. */
-        if (opcode == ANAME || opcode == ASIGNAME) {
-            bool parsed_name = false;
-            unsigned int save = pos;
-
-            if (opcode == ANAME) {
-                /* ANAME layout: [v][o][name\0] */
-                if (pos + 2 < size) {
-                    uint8_t v = data[pos];
-                    uint8_t o = data[pos + 1];
-                    unsigned int nstart = pos + 2;
-                    unsigned int nend = nstart;
-                    /* Find NUL within a reasonable bound */
-                    while (nend < size && (nend - nstart) < 512 && data[nend] != 0)
-                        nend++;
-                    if (nend < size && o < NSYM && v < 0x80 && (nend > nstart)) {
-                        /* Quick sanity: bytes printable or path-ish */
-                        bool ok = true;
-                        for (unsigned int i = nstart; i < nend; i++) {
-                            unsigned char ch = data[i];
-                            if (ch < 0x20 || ch > 0x7e) { ok = false; break; }
-                        }
-                        if (ok) {
-                            char *name = (char *)(data + nstart);
-                            asymbol *sym = bfd_make_empty_symbol (abfd);
-                            if (sym) {
-                                sym->name = bfd_alloc (abfd, (nend - nstart) + 1);
-                                if (sym->name) {
-                                    memcpy ((char*)sym->name, name, (nend - nstart) + 1);
-                                    sym->value = 0;
-                                    sym->flags = BSF_LOCAL;
-                                    local_syms[o] = sym;
+    /* --- PASS 1: collect ANAME/ASIGNAME entries --- */
+    {
+        unsigned int p = 0;
+        bool in_prefix = true;
+        while (p + 1 < size) {
+            unsigned int opcode_pos = p;
+            uint16_t opcode = data[p] | (data[p+1] << 8);
+            p += 2;
+            if (opcode == ANAME || opcode == ASIGNAME) {
+                bool parsed_name = false;
+                unsigned int save = p;
+                if (opcode == ANAME) {
+                    if (p + 2 < size) {
+                        uint8_t v = data[p];
+                        uint8_t o = data[p + 1];
+                        unsigned int nstart = p + 2;
+                        unsigned int nend = nstart;
+                        while (nend < size && (nend - nstart) < 512 && data[nend] != 0)
+                            nend++;
+                        if (nend < size && o < NSYM && v < 0x80 && (nend > nstart)) {
+                            bool ok = true;
+                            for (unsigned int i = nstart; i < nend; i++) {
+                                unsigned char ch = data[i];
+                                if (ch < 0x20 || ch > 0x7e) { ok = false; break; }
+                            }
+                            if (ok) {
+                                char *name = (char *)(data + nstart);
+                                /* Skip ANAME entries that are path-like (they appear in many .7 files as
+                                   file/path fragments like "<usr" and are not real symbol names).
+                                   These entries often reuse the same sym index and overwrite
+                                   previously stored names, confusing later ADATA references.
+                                   We accept names that don't look like path fragments. */
+                                bool is_path_like = false;
+                                if (name[0] == '<' || strchr(name, '/') || (name[0] == '.' && name[1] == '/'))
+                                    is_path_like = true;
+                                if (!is_path_like) {
+                                    /* Logging: report whether we're registering or replacing an existing name. */
+                                    const char *cand_name = name;
+                                    const char *oldn = local_syms[o] ? local_syms[o]->name : NULL;
+                                    if (!local_syms[o] || plan9_should_replace_symname (oldn, cand_name)) {
+                                        asymbol *sym = bfd_make_empty_symbol (abfd);
+                                        if (sym) {
+                                            sym->name = bfd_alloc (abfd, (nend - nstart) + 1);
+                                            if (sym->name) {
+                                                memcpy ((char*)sym->name, name, (nend - nstart) + 1);
+                                                sym->value = 0;
+                                                sym->flags = BSF_LOCAL;
+                                                local_syms[o] = sym;
+                                                PLAN9OBJ_DBG ("[plan9obj][ANAME assign] pos=0x%08x idx=%u created_or_replaced old='%s' new='%s'\n",
+                                                             opcode_pos, (unsigned int) o, oldn?oldn:"(null)", cand_name);
+                                                plan9obj_emit_event (1, opcode_pos, o, "ANAME", "created_or_replaced", oldn?oldn:NULL, cand_name);
+                                            }
+                                        }
+                                    } else {
+                                        PLAN9OBJ_DBG ("[plan9obj][ANAME assign] pos=0x%08x idx=%u kept old='%s' candidate='%s' (not replacing)\n",
+                                                     opcode_pos, (unsigned int) o, oldn?oldn:"(null)", cand_name);
+                                        plan9obj_emit_event (1, opcode_pos, o, "ANAME", "kept", oldn?oldn:NULL, cand_name);
+                                    }
                                     local_types[o] = v;
-                                    /* Note: not exported yet; section assigned later */
-                                    pos = nend + 1;
+                                    p = nend + 1;
+                                    parsed_name = true;
+                                } else {
+                                    /* Path-like ANAME: advance and do not populate local_syms */
+                                    PLAN9OBJ_DBG ("[plan9obj][ANAME assign] pos=0x%08x idx=%u skipped path-like name='%s'\n",
+                                                 opcode_pos, (unsigned int) o, name);
+                                    plan9obj_emit_event (1, opcode_pos, o, "ANAME", "skipped-path", NULL, name);
+                                    p = nend + 1;
+                                    /* parsed_name remains false so this record is not treated as a symbol */
+                                }
+                             }
+                         }
+                     }
+                } else { /* ASIGNAME */
+                    p = save;
+                    if (p + 6 < size) {
+                        unsigned int nstart = p + 6;
+                        uint8_t v = data[p + 4];
+                        uint8_t o = data[p + 5];
+                        unsigned int nend = nstart;
+                        while (nend < size && (nend - nstart) < 512 && data[nend] != 0)
+                            nend++;
+                        if (nend < size && o < NSYM && v < 0x80 && (nend > nstart)) {
+                            bool ok = true;
+                            for (unsigned int i = nstart; i < nend; i++) {
+                                unsigned char ch = data[i];
+                                if (ch < 0x20 || ch > 0x7e) { ok = false; break; }
+                            }
+                            if (ok) {
+                                char *name = (char *)(data + nstart);
+                                /* Skip ASIGNAME entries that are path-like (same heuristic as ANAME). */
+                                bool is_path_like = false;
+                                if (name[0] == '<' || strchr(name, '/') || (name[0] == '.' && name[1] == '/'))
+                                    is_path_like = true;
+                                if (!is_path_like) {
+                                    const char *cand_name = name;
+                                    const char *oldn = local_syms[o] ? local_syms[o]->name : NULL;
+                                    if (!local_syms[o] || plan9_should_replace_symname (oldn, cand_name)) {
+                                        asymbol *sym = bfd_make_empty_symbol (abfd);
+                                        if (sym) {
+                                            sym->name = bfd_alloc (abfd, (nend - nstart) + 1);
+                                            if (sym->name) {
+                                                memcpy ((char*)sym->name, name, (nend - nstart) + 1);
+                                                sym->value = 0;
+                                                sym->flags = BSF_LOCAL;
+                                                local_syms[o] = sym;
+                                                PLAN9OBJ_DBG ("[plan9obj][ASIGNAME assign] pos=0x%08x idx=%u created_or_replaced old='%s' new='%s'\n",
+                                                             opcode_pos, (unsigned int) o, oldn?oldn:"(null)", cand_name);
+                                                plan9obj_emit_event (1, opcode_pos, o, "ASIGNAME", "created_or_replaced", oldn?oldn:NULL, cand_name);
+                                            }
+                                        }
+                                    } else {
+                                        PLAN9OBJ_DBG ("[plan9obj][ASIGNAME assign] pos=0x%08x idx=%u kept old='%s' candidate='%s' (not replacing)\n",
+                                                     opcode_pos, (unsigned int) o, oldn?oldn:"(null)", cand_name);
+                                        plan9obj_emit_event (1, opcode_pos, o, "ASIGNAME", "kept", oldn?oldn:NULL, cand_name);
+                                    }
+                                     asymbol *sym = bfd_make_empty_symbol (abfd);
+                                     if (sym) {
+                                         sym->name = bfd_alloc (abfd, (nend - nstart) + 1);
+                                         if (sym->name) {
+                                             memcpy ((char*)sym->name, name, (nend - nstart) + 1);
+                                             sym->value = 0;
+                                             sym->flags = BSF_LOCAL;
+                                             local_syms[o] = sym;
+                                             p = nend + 1;
+                                             parsed_name = true;
+                                         }
+                                     }
+                                 } else {
+                                     p = nend + 1;
+                                 }
+                             }
+                         }
+                     }
+                 }
+                 if (parsed_name)
+                     continue;
+                 p = save;
+                 if (in_prefix) in_prefix = false;
+             } else {
+                 if (in_prefix) in_prefix = false;
+                 /* Skip the record payload without performing any symbol/reloc work.
+                    Use the same address-parsing helper to advance over operands. */
+                 if (opcode == AEND)
+                     break;
+                 if (p >= size) break;
+                 uint8_t rflag = data[p++];
+                 if (p + 3 >= size) break;
+                 p += 4; /* skip 4-byte line */
+                 struct plan9_address tmpa;
+                 unsigned int consumed = parse_plan9_address (abfd, data, p, size, local_syms, &tmpa);
+                 if (consumed == 0) break;
+                 p += consumed;
+                 if (rflag & 0x40) {
+                     consumed = parse_plan9_address (abfd, data, p, size, local_syms, &tmpa);
+                     if (consumed == 0) break;
+                     p += consumed;
+                 }
+                 consumed = parse_plan9_address (abfd, data, p, size, local_syms, &tmpa);
+                 if (consumed == 0) break;
+                 p += consumed;
+                 /* Continue to next record */
+             }
+         }
+     }
+
+    /* --- PASS 2: full parse, now that local_syms[] is populated --- */
+    {
+        unsigned int p = 0;
+        unsigned int count_atext2 = 0, count_adata2 = 0, count_aglobl2 = 0, count_other2 = 0;
+        bool in_name_prefix2 = true;
+        /* Temporary recorded relocation table: we can't finalize arelent->sym_ptr_ptr
+           until we've allocated the exported symbol vector, so record reloc targets
+           by their original ANAME index here. */
+        struct recorded_reloc {
+            unsigned int addr;   /* offset inside section */
+            int sym_index;       /* original ANAME index (0..NSYM-1) */
+            int64_t addend;      /* addend to attach to relocation */
+            int is_text;         /* 0 => data reloc (ABS64), 1 => text (CALL26) */
+        };
+        struct recorded_reloc *rec_relocs = NULL;
+        long rec_reloc_cap = 0, rec_reloc_count = 0;
+        while (p + 1 < size) {
+            unsigned int opcode_pos = p;
+            uint16_t opcode = data[p] | (data[p+1] << 8);
+            p += 2;
+
+            /* Handle ANAME/ASIGNAME records anywhere in the stream. */
+            if (opcode == ANAME || opcode == ASIGNAME) {
+                bool parsed_name = false;
+                unsigned int save = p;
+
+                if (opcode == ANAME) {
+                    if (p + 2 < size) {
+                        uint8_t v = data[p];
+                        uint8_t o = data[p + 1];
+                        unsigned int nstart = p + 2;
+                        unsigned int nend = nstart;
+                        while (nend < size && (nend - nstart) < 512 && data[nend] != 0)
+                            nend++;
+                        if (nend < size && o < NSYM && v < 0x80 && (nend > nstart)) {
+                            bool ok = true;
+                            for (unsigned int i = nstart; i < nend; i++) {
+                                unsigned char ch = data[i];
+                                if (ch < 0x20 || ch > 0x7e) { ok = false; break; }
+                            }
+                            if (ok) {
+                                /* ANAME parsed; if symbol already exists (from pass1) keep it,
+                                   otherwise create a new entry. */
+                                /* Only register a symbol here if the name does not look path-like.
+                                   This avoids cases where ANAME entries are used for file/path
+                                   fragments and would otherwise override real symbol names. */
+                                char *nm = (char *)(data + nstart);
+                                bool is_path_like2 = (nm[0] == '<' || strchr(nm, '/') || (nm[0] == '.' && nm[1] == '/'));
+                                if (!is_path_like2) {
+                                    if (!local_syms[o]) {
+                                        const char *cand_name = nm;
+                                        asymbol *sym = bfd_make_empty_symbol (abfd);
+                                        if (sym) {
+                                            sym->name = bfd_alloc (abfd, (nend - nstart) + 1);
+                                            if (sym->name) {
+                                                memcpy ((char*)sym->name, data + nstart, (nend - nstart) + 1);
+                                                sym->value = 0;
+                                                sym->flags = BSF_LOCAL;
+                                                local_syms[o] = sym;
+                                                PLAN9OBJ_DBG ("[plan9obj][ANAME pass2 assign] pos=0x%08x idx=%u created new='%s'\n",
+                                                             opcode_pos, (unsigned int) o, cand_name);
+                                        plan9obj_emit_event (2, opcode_pos, o, "ANAME", "created", NULL, cand_name);
+                                            }
+                                        }
+                                    } else {
+                                        PLAN9OBJ_DBG ("[plan9obj][ANAME pass2 assign] pos=0x%08x idx=%u already_has='%s'\n",
+                                                     opcode_pos, (unsigned int) o, local_syms[o]?local_syms[o]->name:"(null)");
+                                        plan9obj_emit_event (2, opcode_pos, o, "ANAME", "already_has", local_syms[o]?local_syms[o]->name:NULL, NULL);
+                                    }
+                                    local_types[o] = v;
+                                    p = nend + 1;
                                     parsed_name = true;
                                 }
                             }
                         }
                     }
-                }
-            } else if (opcode == ASIGNAME) {
-                /* ASIGNAME layout: [sig32][v][o][name\0] */
-                uint8_t v = data[pos];
-                /* Re-read with signature present */
-                pos = save;
-                if (pos + 6 < size) {
-                    unsigned int nstart = pos + 6;
-                    v = data[pos + 4];
-                    uint8_t o = data[pos + 5];
-                    unsigned int nend = nstart;
-                    while (nend < size && (nend - nstart) < 512 && data[nend] != 0)
-                        nend++;
-                    if (nend < size && o < NSYM && v < 0x80 && (nend > nstart)) {
-                        bool ok = true;
-                        for (unsigned int i = nstart; i < nend; i++) {
-                            unsigned char ch = data[i];
-                            if (ch < 0x20 || ch > 0x7e) { ok = false; break; }
-                        }
-                        if (ok) {
-                            char *name = (char *)(data + nstart);
-                            asymbol *sym = bfd_make_empty_symbol (abfd);
-                            if (sym) {
-                                sym->name = bfd_alloc (abfd, (nend - nstart) + 1);
-                                if (sym->name) {
-                                    memcpy ((char*)sym->name, name, (nend - nstart) + 1);
-                                    sym->value = 0;
-                                    sym->flags = BSF_LOCAL;
-                                    local_syms[o] = sym;
-                                    local_types[o] = v;
-                                    /* Not exported yet; section assigned later */
-                                    pos = nend + 1;
-                                    parsed_name = true;
-                                }
+                } else { /* ASIGNAME */
+                    p = save;
+                    if (p + 6 < size) {
+                        unsigned int nstart = p + 6;
+                        uint8_t v = data[p + 4];
+                        uint8_t o = data[p + 5];
+                        unsigned int nend = nstart;
+                        while (nend < size && (nend - nstart) < 512 && data[nend] != 0)
+                            nend++;
+                        if (nend < size && o < NSYM && v < 0x80 && (nend > nstart)) {
+                            bool ok = true;
+                            for (unsigned int i = nstart; i < nend; i++) {
+                                unsigned char ch = data[i];
+                                if (ch < 0x20 || ch > 0x7e) { ok = false; break; }
                             }
-                        }
+                            if (ok) {
+                                char *name = (char *)(data + nstart);
+                                /* Skip ASIGNAME entries that are path-like (same heuristic as ANAME). */
+                                bool is_path_like = false;
+                                if (name[0] == '<' || strchr(name, '/') || (name[0] == '.' && name[1] == '/'))
+                                    is_path_like = true;
+                                if (!is_path_like) {
+                                    const char *cand_name = name;
+                                    const char *oldn = local_syms[o] ? local_syms[o]->name : NULL;
+                                    if (!local_syms[o] || plan9_should_replace_symname (oldn, cand_name)) {
+                                        asymbol *sym = bfd_make_empty_symbol (abfd);
+                                        if (sym) {
+                                            sym->name = bfd_alloc (abfd, (nend - nstart) + 1);
+                                            if (sym->name) {
+                                                memcpy ((char*)sym->name, name, (nend - nstart) + 1);
+                                                sym->value = 0;
+                                                sym->flags = BSF_LOCAL;
+                                                local_syms[o] = sym;
+                                                PLAN9OBJ_DBG ("[plan9obj][ASIGNAME assign] pos=0x%08x idx=%u created_or_replaced old='%s' new='%s'\n",
+                                                             opcode_pos, (unsigned int) o, oldn?oldn:"(null)", cand_name);
+                                                plan9obj_emit_event (1, opcode_pos, o, "ASIGNAME", "created_or_replaced", oldn?oldn:NULL, cand_name);
+                                            }
+                                        }
+                                    } else {
+                                        PLAN9OBJ_DBG ("[plan9obj][ASIGNAME assign] pos=0x%08x idx=%u kept old='%s' candidate='%s' (not replacing)\n",
+                                                     opcode_pos, (unsigned int) o, oldn?oldn:"(null)", cand_name);
+                                        plan9obj_emit_event (1, opcode_pos, o, "ASIGNAME", "kept", oldn?oldn:NULL, cand_name);
+                                    }
+                                     asymbol *sym = bfd_make_empty_symbol (abfd);
+                                     if (sym) {
+                                         sym->name = bfd_alloc (abfd, (nend - nstart) + 1);
+                                         if (sym->name) {
+                                             memcpy ((char*)sym->name, name, (nend - nstart) + 1);
+                                             sym->value = 0;
+                                             sym->flags = BSF_LOCAL;
+                                             local_syms[o] = sym;
+                                             p = nend + 1;
+                                             parsed_name = true;
+                                         }
+                                     }
+                                 } else {
+                                     p = nend + 1;
+                                 }
+                             }
+                         }
+                     }
+                 }
+                 if (parsed_name)
+                     continue;
+                 p = save;
+                 if (in_name_prefix2) in_name_prefix2 = false;
+             } else {
+                 if (in_name_prefix2) in_name_prefix2 = false;
+                 /* Skip the record payload without performing any symbol/reloc work.
+                    Use the same address-parsing helper to advance over operands. */
+                 if (opcode == AEND)
+                     break;
+                 if (p >= size) break;
+                 uint8_t rflag = data[p++];
+                 if (p + 3 >= size) break;
+                 p += 4; /* skip 4-byte line */
+                 struct plan9_address tmpa;
+                 /* Special-case ADATA here so we can synthesize data relocations.
+                    Typical ADATA records contain a destination address and a
+                    source/initializer which may refer to a symbol. We parse
+                    the first two address operands and, if the source refers to
+                    a symbol, record an ABS64 relocation for the destination
+                    offset referencing that symbol. */
+                if (opcode == ADATA) {
+                    unsigned int before = p;
+                    unsigned int consumed1 = parse_plan9_address (abfd, data, p, size, local_syms, &tmpa);
+                    if (consumed1 == 0) break;
+                    p += consumed1;
+                    struct plan9_address dest = tmpa;
+                    struct plan9_address src;
+                    unsigned int consumed2 = parse_plan9_address (abfd, data, p, size, local_syms, &src);
+                    if (consumed2 == 0) {
+                        /* Some ADATA encodings may not have a second address;
+                           roll back and continue conservatively. */
+                        p = before + consumed1;
+                    } else {
+                        p += consumed2;
                     }
-                }
-            }
-            if (parsed_name) {
-                /* If we were still in the initial name prefix, stay or drop depending on content. */
-                continue; /* Next record */
-            }
-            /* Failed to parse as name; rewind and treat regularly. */
-            pos = save;
-            if (in_name_prefix)
-                in_name_prefix = false;
-        } else if (in_name_prefix) {
-            /* First non-name record ends the initial prefix. */
-            in_name_prefix = false;
-            /* pos already advanced after opcode; fall through to normal parsing. */
-        }
 
-        /* Normal instruction path and section sizing */
-        if (opcode == AEND) {
-            break; /* End of object */
-        } else {
-            /* Regular instruction - read reg/flag (1), skip 4-byte line, then parse addresses */
-            if (pos >= size) break;
-            uint8_t rflag = data[pos++];
-            if (pos + 3 >= size) break;
-            pos += 4;
-            struct plan9_address from_addr;
-            unsigned int consumed = parse_plan9_address (abfd, data, pos, size, local_syms, &from_addr);
-            if (consumed == 0) break;
-            pos += consumed;
-            if (rflag & 0x40) {
-                struct plan9_address from3;
-                consumed = parse_plan9_address (abfd, data, pos, size, local_syms, &from3);
+                    /* Log parsed operand details for debugging. */
+                    PLAN9OBJ_DBG ("[plan9obj][ADATA parse] pos=0x%08x dest.type=%u dest.sym=%u dest.off=%lld src.type=%u src.sym=%u src.off=%lld\n",
+                                 opcode_pos, (unsigned int) dest.type, (unsigned int) dest.sym_index, (long long) dest.offset,
+                                 (unsigned int) src.type, (unsigned int) src.sym_index, (long long) src.offset);
+
+                    /* Determine whether either operand refers to a symbol.
+                       Prefer the second parsed address (commonly the 'to' target)
+                       as the relocation source; fall back to the first if needed. */
+                    int target_idx = -1;
+                    unsigned int target_addr = 0;
+                    int64_t target_addend = 0;
+                    if (src.symbol && src.sym_index < NSYM) {
+                        /* Use second operand as the symbol target. */
+                        target_idx = (int) src.sym_index;
+                        target_addr = (unsigned int) dest.offset;
+                        target_addend = src.offset;
+                    } else if (dest.symbol && dest.sym_index < NSYM) {
+                        /* Some ADATA variants put the symbol in the first operand. */
+                        target_idx = (int) dest.sym_index;
+                        target_addr = (unsigned int) src.offset;
+                        target_addend = dest.offset;
+                    }
+                    if (target_idx >= 0) {
+                        if (rec_reloc_count + 1 > rec_reloc_cap) {
+                            long newcap = rec_reloc_cap ? rec_reloc_cap * 2 : 16;
+                            rec_relocs = (struct recorded_reloc *) bfd_realloc (rec_relocs, newcap * sizeof (*rec_relocs));
+                            rec_reloc_cap = newcap;
+                        }
+                        rec_relocs[rec_reloc_count].addr = target_addr;
+                        rec_relocs[rec_reloc_count].sym_index = target_idx;
+                        rec_relocs[rec_reloc_count].addend = target_addend;
+                        rec_relocs[rec_reloc_count].is_text = 0; /* data ABS64 */
+                        rec_reloc_count++;
+                        PLAN9OBJ_DBG ("[plan9obj][ADATA] pos=0x%08x recorded data-reloc addr=0x%x symidx=%d addend=%lld\n",
+                                     opcode_pos, target_addr, target_idx, (long long) target_addend);
+                        plan9obj_emit_event (2, opcode_pos, target_idx, "ADATA", "recorded-reloc", NULL, NULL);
+                    }
+                    /* Advance over any trailing third operand if present. */
+                    if (rflag & 0x40) {
+                        unsigned int consumed3 = parse_plan9_address (abfd, data, p, size, local_syms, &tmpa);
+                        if (consumed3 == 0) break;
+                        p += consumed3;
+                    }
+                    continue;
+                }
+
+                unsigned int consumed = parse_plan9_address (abfd, data, p, size, local_syms, &tmpa);
                 if (consumed == 0) break;
-                pos += consumed;
+                p += consumed;
+                if (rflag & 0x40) {
+                    consumed = parse_plan9_address (abfd, data, p, size, local_syms, &tmpa);
+                    if (consumed == 0) break;
+                    p += consumed;
+                }
+                consumed = parse_plan9_address (abfd, data, p, size, local_syms, &tmpa);
+                if (consumed == 0) break;
+                p += consumed;
+                 /* Continue to next record */
+             }
+         }
+        /* After finishing the pass2 scan, convert recorded relocation entries
+           into real arelent structures and materialize the exported symbol
+           vector so canonicalize_* functions can access them. */
+        /* Build symbol vector and mapping from original ANAME index -> symbol vector index. */
+        int sym_map[NSYM];
+        memset (sym_map, -1, sizeof (sym_map));
+        /* Count actual symbols found */
+        unsigned int sym_count = 0;
+        for (unsigned int i = 0; i < NSYM; ++i) {
+            if (local_syms[i]) sym_count++;
+        }
+        if (sym_count) {
+            struct plan9_obj_tdata *t = plan9_obj_tdata (abfd);
+            t->symbol_count = sym_count;
+            t->symbols = (asymbol **) bfd_zalloc (abfd, (sym_count + 1) * sizeof (asymbol *));
+            unsigned int dst = 0;
+            for (unsigned int i = 0; i < NSYM; ++i) {
+                if (!local_syms[i]) continue;
+                sym_map[i] = dst;
+                /* Assign a reasonable default section for the symbol.  We will
+                   overwrite this below if a relocation indicates the real use.
+                   Use .bss initially so that unreferenced locals do not appear
+                   as functions. */
+                local_syms[i]->section = t->bss_section;
+                t->symbols[dst++] = local_syms[i];
             }
+            t->symbols[dst] = NULL;
 
-            /* Parse 'to' operand */
-            struct plan9_address to_addr;
-            consumed = parse_plan9_address (abfd, data, pos, size, local_syms, &to_addr);
-            if (consumed == 0) break;
-            pos += consumed;
-
-            /* Process instruction based on opcode */
-            if (opcode == ATEXT) {
-                /* Text section symbol comes from first address 'a' (from_addr). */
-                if (from_addr.symbol && from_addr.type == D_OREG &&
-                    (from_addr.name == D_STATIC || from_addr.name == D_EXTERN)) {
-                    from_addr.symbol->section = plan9_obj_tdata(abfd)->text_section;
-                    from_addr.symbol->value = plan9_obj_tdata(abfd)->text_size;
-                    from_addr.symbol->flags = BSF_FUNCTION | BSF_GLOBAL;
-                    bool seen = false;
-                    for (unsigned int k = 0; k < collected_count; k++) if (collected[k] == from_addr.symbol) { seen = true; break; }
-                    if (!seen && collected_count < (unsigned) (sizeof collected / sizeof collected[0]))
-                        collected[collected_count++] = from_addr.symbol;
+            /* Allocate final reloc arrays sized to recorded counts (grow-on-demand
+               remains supported but we can pre-reserve). */
+            if (rec_reloc_count) {
+                t->data_relocs = (arelent **) bfd_zalloc (abfd, rec_reloc_count * sizeof (arelent *));
+                t->data_reloc_count = 0;
+                /* Materialize each recorded reloc. */
+                for (long ri = 0; ri < rec_reloc_count; ++ri) {
+                    struct recorded_reloc *r = &rec_relocs[ri];
+                    int mapped = (r->sym_index >= 0 && r->sym_index < NSYM) ? sym_map[r->sym_index] : -1;
+                    if (mapped < 0) continue;
+                    arelent *rel = (arelent *) bfd_zalloc (abfd, sizeof (arelent));
+                    /* bfd_zalloc zeroes the memory; no explicit memset required. */
+                    rel->address = (bfd_vma) r->addr;
+                    rel->addend = (bfd_signed_vma) r->addend;
+                    rel->howto = bfd_reloc_type_lookup (abfd, BFD_RELOC_64);
+                    /* sym_ptr_ptr expects pointer into the symbol vector. */
+                    rel->sym_ptr_ptr = &t->symbols[mapped];
+                    t->data_relocs[t->data_reloc_count++] = rel;
+                    /* Mark referenced symbol as data (so it will show in nm/objdump as data). */
+                    t->symbols[mapped]->section = t->data_section;
+                    PLAN9OBJ_DBG ("[plan9obj][finalize] created data rel addr=0x%x -> symvec[%d] name='%s' addend=%lld\n",
+                                 r->addr, mapped, t->symbols[mapped]->name ? t->symbols[mapped]->name : "(null)", (long long) r->addend);
                 }
-                /* Crude heuristic: treat each ATEXT instruction as 4 bytes. */
-                plan9_obj_tdata(abfd)->text_size += 4;
-                /* If this ATEXT also encodes a branch target (from_addr with symbol),
-                   synthesize a CALL26 relocation at current text offset. */
-                if (from_addr.symbol) {
-                    if (plan9_obj_tdata(abfd)->text_reloc_count >= text_rel_cap) {
-                        long newcap = text_rel_cap * 2;
-                        arelent **nr = (arelent **) bfd_zalloc (abfd, newcap * sizeof (arelent *));
-                        if (!nr) { free (data); return false; }
-                        memcpy (nr, plan9_obj_tdata(abfd)->text_relocs, text_rel_cap * sizeof (arelent *));
-                        plan9_obj_tdata(abfd)->text_relocs = nr;
-                        text_rel_cap = newcap;
-                    }
-                    arelent *r = (arelent *) bfd_zalloc (abfd, sizeof (arelent));
-                    if (!r) { free (data); return false; }
-                    r->howto = &plan9obj_aarch64_call26_howto;
-                    r->sym_ptr_ptr = (asymbol **) bfd_zalloc (abfd, sizeof (asymbol *));
-                    if (!r->sym_ptr_ptr) { free (data); return false; }
-                    *(r->sym_ptr_ptr) = from_addr.symbol;
-                    r->address = plan9_obj_tdata(abfd)->text_size - 4; /* relocation at this instruction */
-                    r->addend = 0;
-                    PLAN9OBJ_DBG ("[plan9obj] added text-reloc sym=%s addr=0x%llx\n", from_addr.symbol?from_addr.symbol->name:"(null)", (unsigned long long) r->address);
-                    plan9_obj_tdata(abfd)->text_relocs[plan9_obj_tdata(abfd)->text_reloc_count++] = r;
+                /* Estimate data section size as max referenced offset + 8 bytes. */
+                bfd_size_type maxoff = 0;
+                for (long ri = 0; ri < rec_reloc_count; ++ri) {
+                    if (rec_relocs[ri].addr + 8 > maxoff)
+                        maxoff = rec_relocs[ri].addr + 8;
                 }
-            } else if (opcode == ADATA) {
-                count_adata++;
-                /* Initialized data symbol comes from first address. */
-                if (from_addr.symbol && from_addr.type == D_OREG &&
-                    (from_addr.name == D_STATIC || from_addr.name == D_EXTERN)) {
-                    from_addr.symbol->section = plan9_obj_tdata(abfd)->data_section;
-                    from_addr.symbol->value = plan9_obj_tdata(abfd)->data_size;
-                    from_addr.symbol->flags = BSF_OBJECT | BSF_GLOBAL;
-                    bool seen = false;
-                    for (unsigned int k = 0; k < collected_count; k++) if (collected[k] == from_addr.symbol) { seen = true; break; }
-                    if (!seen && collected_count < (unsigned) (sizeof collected / sizeof collected[0]))
-                        collected[collected_count++] = from_addr.symbol;
-                }
-                /* Diagnostic: print operand details for analysis (temporary) */
-                {
-                    const char *from_sym = from_addr.symbol ? from_addr.symbol->name : "(null)";
-                    const char *to_sym = to_addr.symbol ? to_addr.symbol->name : "(null)";
-                    PLAN9OBJ_DBG ("[plan9obj] ADATA@0x%08x from(t=%u n=%u sidx=%u off=%lld sym=%s) to(t=%u n=%u sidx=%u off=%lld sym=%s)\n",
-                             opcode_pos,
-                             (unsigned int) from_addr.type, (unsigned int) from_addr.name, (unsigned int) from_addr.sym_index, (long long) from_addr.offset, from_sym,
-                             (unsigned int) to_addr.type, (unsigned int) to_addr.name, (unsigned int) to_addr.sym_index, (long long) to_addr.offset, to_sym);
-                }
-
-                /* Determine whether this ADATA encodes a relocation. Heuristics:
-                   - Prefer the 'to' operand as the referenced symbol (it's the value being written);
-                   - If 'to' has no symbol but the 'from' operand is not a definition (i.e. not D_STATIC/D_EXTERN),
-                     then 'from' likely encodes a symbol reference and should be relocated.
-                   - Otherwise no relocation is necessary (literal constants, local data initialization). */
-                {
-                    asymbol *rel_sym = NULL;
-                    long long rel_addend = 0;
-                    if (to_addr.symbol) {
-                        rel_sym = to_addr.symbol;
-                        rel_addend = to_addr.offset;
-                    } else if (from_addr.symbol && from_addr.type == D_OREG &&
-                               !(from_addr.name == D_STATIC || from_addr.name == D_EXTERN)) {
-                        rel_sym = from_addr.symbol;
-                        rel_addend = from_addr.offset;
-                    }
-
-                    /* Size the datum (assume 8-byte pointers/words for ABS64). */
-                    unsigned long long datum_start = plan9_obj_tdata(abfd)->data_size;
-                    plan9_obj_tdata(abfd)->data_size += 8;
-
-                    if (rel_sym) {
-                        if (plan9_obj_tdata(abfd)->data_reloc_count >= data_rel_cap) {
-                            long newcap = data_rel_cap * 2;
-                            arelent **nr = (arelent **) bfd_zalloc (abfd, newcap * sizeof (arelent *));
-                            if (!nr) { free (data); return false; }
-                            memcpy (nr, plan9_obj_tdata(abfd)->data_relocs, data_rel_cap * sizeof (arelent *));
-                            plan9_obj_tdata(abfd)->data_relocs = nr;
-                            data_rel_cap = newcap;
-                        }
-                        arelent *r = (arelent *) bfd_zalloc (abfd, sizeof (arelent));
-                        if (!r) { free (data); return false; }
-                        r->howto = &plan9obj_aarch64_abs64_howto;
-                        r->sym_ptr_ptr = (asymbol **) bfd_zalloc (abfd, sizeof (asymbol *));
-                        if (!r->sym_ptr_ptr) { free (data); return false; }
-                        *(r->sym_ptr_ptr) = rel_sym;
-                        r->address = (bfd_vma) datum_start;
-                        r->addend = rel_addend;
-                        PLAN9OBJ_DBG ("[plan9obj] added data-reloc sym=%s addr=0x%llx addend=%lld\n",
-                                 rel_sym?rel_sym->name:"(null)", (unsigned long long) r->address, (long long) r->addend);
-                        plan9_obj_tdata(abfd)->data_relocs[plan9_obj_tdata(abfd)->data_reloc_count++] = r;
-                    }
-                }
-            } else if (opcode == AGLOBL) {
-                count_aglobl++;
-                /* Uninitialized globals are BSS; based on first address. */
-                if (from_addr.symbol && from_addr.type == D_OREG &&
-                    (from_addr.name == D_STATIC || from_addr.name == D_EXTERN)) {
-                    from_addr.symbol->section = plan9_obj_tdata(abfd)->bss_section;
-                    from_addr.symbol->value = 0;
-                    from_addr.symbol->flags = BSF_OBJECT | BSF_GLOBAL;
-                    bool seen = false;
-                    for (unsigned int k = 0; k < collected_count; k++) if (collected[k] == from_addr.symbol) { seen = true; break; }
-                    if (!seen && collected_count < (unsigned) (sizeof collected / sizeof collected[0]))
-                        collected[collected_count++] = from_addr.symbol;
-                }
-            } else {
-                /* Treat all other opcodes as code instructions. Approx 4 bytes each. */
-                plan9_obj_tdata(abfd)->text_size += 4;
-                count_other++;
+                t->data_size = maxoff;
+                if (t->data_section) bfd_set_section_size (t->data_section, t->data_size);
             }
         }
-    }
-    
-    /* Export only the collected symbols (with sections) to BFD */
-    if (collected_count > 0) {
-        plan9_obj_tdata(abfd)->symbol_count = collected_count;
-        plan9_obj_tdata(abfd)->symbols = (asymbol **) bfd_alloc (abfd, collected_count * sizeof (asymbol *));
-        if (plan9_obj_tdata(abfd)->symbols) {
-            memcpy (plan9_obj_tdata(abfd)->symbols, collected, collected_count * sizeof (asymbol *));
-            for (unsigned int i = 0; i < collected_count; i++) {
-                const char *nm = plan9_obj_tdata(abfd)->symbols[i]->name;
-                asection *s = plan9_obj_tdata(abfd)->symbols[i]->section;
-                unsigned long long val = plan9_obj_tdata(abfd)->symbols[i]->value;
-                PLAN9OBJ_DBG ("[plan9obj] sym[%u] name='%s' sec=%s val=0x%llx\n", i, nm?nm:"(null)", s?s->name:"(null)", val);
-            }
-        }
-    }
-    
-    /* Apply synthesized sizes to sections so higher layers see something. */
-    if (plan9_obj_tdata(abfd)->text_section)
-        plan9_obj_tdata(abfd)->text_section->size = plan9_obj_tdata(abfd)->text_size;
-    if (plan9_obj_tdata(abfd)->data_section)
-        plan9_obj_tdata(abfd)->data_section->size = plan9_obj_tdata(abfd)->data_size;
+        /* Report how many relocation candidates we recorded in pass2. */
+        if (rec_relocs) bfd_realloc (rec_relocs, 0); /* free */
+     }
 
-    /* Debug: report synthesized sizes and symbol count. */
-    PLAN9OBJ_DBG ("[plan9obj] ATEXT=%u ADATA=%u AGLOBL=%u OTHER=%u -> text=%llu data=%llu syms=%u\n",
-             count_atext, count_adata, count_aglobl, count_other,
-             (unsigned long long) plan9_obj_tdata(abfd)->text_size,
-             (unsigned long long) plan9_obj_tdata(abfd)->data_size,
-             plan9_obj_tdata(abfd)->symbol_count);
-    PLAN9OBJ_DBG ("[plan9obj] relocs: text=%ld data=%ld\n", plan9_obj_tdata(abfd)->text_reloc_count, plan9_obj_tdata(abfd)->data_reloc_count);
+    /* --- POST-PARSE: finalize object file state --- */
+    {
+        unsigned int i;
+        /* Count actual symbols found (exported + locals) */
+        for (i = 0; i < NSYM; i++) {
+            if (local_syms[i])
+                plan9_obj_tdata(abfd)->symbol_count++;
+        }
+        /* Symbol array and section sizes are exported through plan9_obj_tdata
+           and applied to sections further below in a BFD-compatible way.
+           Do not write directly into BFD internals here. */
+    }
 
     free (data);
     return true;
@@ -742,6 +1025,72 @@ plan9obj_bfd_reloc_name_lookup (bfd *abfd ATTRIBUTE_UNUSED, const char *name)
     return NULL;
 }
 
-/* Expose parse helper via a post-create hook if needed later. */
+static void
+plan9_dname_str (int d, char *buf, size_t buflen)
+{
+    if (!buf || buflen == 0) return;
+    switch (d) {
+        case D_OREG:    snprintf (buf, buflen, "D_OREG"); break;
+        case D_STATIC:  snprintf (buf, buflen, "D_STATIC"); break;
+        case D_EXTERN:  snprintf (buf, buflen, "D_EXTERN"); break;
+        case D_CONST:   snprintf (buf, buflen, "D_CONST"); break;
+        case D_DCONST:  snprintf (buf, buflen, "D_DCONST"); break;
+        case D_SCONST:  snprintf (buf, buflen, "D_SCONST"); break;
+        case D_REG:     snprintf (buf, buflen, "D_REG"); break;
+        case D_SP:      snprintf (buf, buflen, "D_SP"); break;
+        case D_FREG:    snprintf (buf, buflen, "D_FREG"); break;
+        case D_VREG:    snprintf (buf, buflen, "D_VREG"); break;
+        case D_ROFF:    snprintf (buf, buflen, "D_ROFF"); break;
+        case D_BRANCH:  snprintf (buf, buflen, "D_BRANCH"); break;
+        default:        snprintf (buf, buflen, "D_%d", d); break;
+    }
+}
 
-/* Plan 9 object file target vector is defined in bfd-plan9.c to avoid duplication. */
+/* Plan 9 object file private helper: decide if a new symbol name should replace an existing one.
+   Heuristic rules (conservative):
+   - If no old name, accept new.
+   - If old is path-like (< or contains '/') prefer new.
+   - If old contains '$' and new does not -> prefer new.
+   - If new contains '$' and old does not -> do not replace.
+   - If old starts with '.' (like .string) and new does not -> prefer new.
+   - Otherwise keep the existing name to preserve stability. */
+static inline bool
+plan9_is_word (const char *s)
+{
+    if (!s || s[0] == '\0') return false;
+    if (s[0] == '.') return false;
+    for (const char *p = s; *p; ++p) {
+        char c = *p;
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'))
+            return false;
+    }
+    return true;
+}
+
+static bool
+plan9_should_replace_symname (const char *oldn, const char *newn)
+{
+    if (!newn) return false;
+    if (!oldn) return true;
+
+    bool old_is_path_like = (strchr(oldn, '/') != NULL) || (oldn[0] == '<');
+    bool new_is_path_like = (strchr(newn, '/') != NULL) || (newn[0] == '<');
+
+    bool old_word = plan9_is_word (oldn);
+    bool new_word = plan9_is_word (newn);
+
+    /* Replace if the old name is clearly path-/table-like and new is a tidy word. */
+    if ((old_is_path_like || strchr(oldn, '$') || oldn[0] == '.') && new_word && !new_is_path_like)
+        return true;
+
+    /* Do not replace a good, word-like existing name with another name that is not strictly better. */
+    if (old_word && new_word)
+        return false;
+
+    /* If old is not word-like but new is word-like prefer new. */
+    if (!old_word && new_word)
+        return true;
+
+    /* Otherwise, default to keeping the existing name for stability. */
+    return false;
+}
