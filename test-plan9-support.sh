@@ -5,7 +5,10 @@ echo "Testing Plan9 ARM64 support in binutils-2.42..."
 echo "=================================================="
 
 OBJDUMP="./binutils/objdump"
-TEST_FILE="/home/tmumford/Coding/os/9front_sourcetree/ganges/7.out"
+# Compute repo root relative to this script so we don't bake absolute user paths in source.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+TEST_FILE="${TEST_FILE:-$REPO_ROOT/arm64_9front_samples/ganges/ganges.7}"
 
 if [ ! -f "$OBJDUMP" ]; then
     echo "❌ ERROR: objdump not found at $OBJDUMP"

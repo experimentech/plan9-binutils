@@ -2,13 +2,13 @@
 
 This document summarizes how the 9front toolchain (assembler, compiler backends and linker) represents and operates on object files and archives. It is based on the 9front source in this workspace (notably the linker/assembler code under `sys/src/cmd/*l` and related headers).
 
-Paths referenced in this document point into this workspace; the most relevant sources are:
+Paths referenced in this document point into this workspace or into a local 9front tree; the most relevant sources are:
 
 - Linkers/assemblers (examples):
-  - `/home/tmumford/Coding/os/ganges/9front/sys/src/cmd/6l/obj.c` (amd64 linker)
-  - `/home/tmumford/Coding/os/ganges/9front/sys/src/cmd/8l/obj.c` (386 linker)
-  - `/home/tmumford/Coding/os/ganges/9front/sys/src/cmd/6l/l.h` and `/home/tmumford/Coding/os/ganges/9front/sys/src/cmd/8l/l.h` (linker headers)
-  - `/home/tmumford/Coding/os/ganges/9front/sys/src/cmd/6c/6.out.h` and `/home/tmumford/Coding/os/ganges/9front/sys/src/cmd/8c/8.out.h` (compiler backend/assembly constants)
+  - `/path/to/ganges/9front/sys/src/cmd/6l/obj.c` (amd64 linker)
+  - `/path/to/ganges/9front/sys/src/cmd/8l/obj.c` (386 linker)
+  - `/path/to/ganges/9front/sys/src/cmd/6l/l.h` and `/path/to/ganges/9front/sys/src/cmd/8l/l.h` (linker headers)
+  - `/path/to/ganges/9front/sys/src/cmd/6c/6.out.h` and `/path/to/ganges/9front/sys/src/cmd/8c/8.out.h` (compiler backend/assembly constants)
 
 Use these files as the primary authoritative references when implementing tools that read or emit Plan 9 object formats in this tree.
 
