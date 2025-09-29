@@ -15,6 +15,38 @@
 #include <stdio.h>
 #include <string.h>
 #include "libbfd.h"
+#include <stdlib.h>
+
+/* Debugging helper: guard plan9obj internal diagnostics behind an
+   environment-controlled function so developers can re-enable them when
+   needed without editing source. The helper checks PLAN9OBJ_DEBUG and
+   BFD_VERBOSE once at runtime to avoid repeated getenv cost. */
+static int plan9obj_debug_enabled = -1;
+static void
+plan9obj_dbg (bfd *abfd, const char *fmt, ...)
+{
+    va_list ap;
+    if (plan9obj_debug_enabled < 0)
+    {
+        const char *e1 = getenv ("PLAN9OBJ_DEBUG");
+        const char *e2 = getenv ("BFD_VERBOSE");
+        plan9obj_debug_enabled = ((e1 && *e1) || (e2 && *e2)) ? 1 : 0;
+    }
+    if (!plan9obj_debug_enabled)
+        return;
+
+    va_start (ap, fmt);
+    if (abfd && /* if bfd has a printf-like helper, prefer it */ 0) {
+        /* Placeholder: prefer bfd-specific printing if available. */
+        vfprintf (stderr, fmt, ap);
+    } else {
+        vfprintf (stderr, fmt, ap);
+    }
+    va_end (ap);
+}
+
+/* Convenience macro to preserve call site brevity; callers must have 'abfd' in scope. */
+#define PLAN9OBJ_DBG(...) plan9obj_dbg (abfd, __VA_ARGS__)
 
 /* Minimal AArch64 relocation howtos for Plan 9 object usage. We only need
      a couple to link simple programs: absolute 64-bit and branch/call 26-bit. */
@@ -411,11 +443,9 @@ parse_plan9_object (bfd *abfd)
             if (pos + 3 >= size) break;
             pos += 4;
             struct plan9_address from_addr;
-            unsigned int consumed = parse_plan9_address (abfd, data, pos, 
-                                                        size, local_syms, &from_addr);
+            unsigned int consumed = parse_plan9_address (abfd, data, pos, size, local_syms, &from_addr);
             if (consumed == 0) break;
             pos += consumed;
-            
             if (rflag & 0x40) {
                 struct plan9_address from3;
                 consumed = parse_plan9_address (abfd, data, pos, size, local_syms, &from3);
@@ -425,14 +455,12 @@ parse_plan9_object (bfd *abfd)
 
             /* Parse 'to' operand */
             struct plan9_address to_addr;
-            consumed = parse_plan9_address (abfd, data, pos, 
-                                           size, local_syms, &to_addr);
+            consumed = parse_plan9_address (abfd, data, pos, size, local_syms, &to_addr);
             if (consumed == 0) break;
             pos += consumed;
-            
+
             /* Process instruction based on opcode */
             if (opcode == ATEXT) {
-                count_atext++;
                 /* Text section symbol comes from first address 'a' (from_addr). */
                 if (from_addr.symbol && from_addr.type == D_OREG &&
                     (from_addr.name == D_STATIC || from_addr.name == D_EXTERN)) {
@@ -465,6 +493,7 @@ parse_plan9_object (bfd *abfd)
                     *(r->sym_ptr_ptr) = from_addr.symbol;
                     r->address = plan9_obj_tdata(abfd)->text_size - 4; /* relocation at this instruction */
                     r->addend = 0;
+                    PLAN9OBJ_DBG ("[plan9obj] added text-reloc sym=%s addr=0x%llx\n", from_addr.symbol?from_addr.symbol->name:"(null)", (unsigned long long) r->address);
                     plan9_obj_tdata(abfd)->text_relocs[plan9_obj_tdata(abfd)->text_reloc_count++] = r;
                 }
             } else if (opcode == ADATA) {
@@ -480,27 +509,58 @@ parse_plan9_object (bfd *abfd)
                     if (!seen && collected_count < (unsigned) (sizeof collected / sizeof collected[0]))
                         collected[collected_count++] = from_addr.symbol;
                 }
-                /* Approximate each ADATA as 8 bytes of data. */
-                plan9_obj_tdata(abfd)->data_size += 8;
-                /* If data references an external symbol in from_addr, create ABS64 reloc. */
-                if (from_addr.symbol) {
-                    if (plan9_obj_tdata(abfd)->data_reloc_count >= data_rel_cap) {
-                        long newcap = data_rel_cap * 2;
-                        arelent **nr = (arelent **) bfd_zalloc (abfd, newcap * sizeof (arelent *));
-                        if (!nr) { free (data); return false; }
-                        memcpy (nr, plan9_obj_tdata(abfd)->data_relocs, data_rel_cap * sizeof (arelent *));
-                        plan9_obj_tdata(abfd)->data_relocs = nr;
-                        data_rel_cap = newcap;
+                /* Diagnostic: print operand details for analysis (temporary) */
+                {
+                    const char *from_sym = from_addr.symbol ? from_addr.symbol->name : "(null)";
+                    const char *to_sym = to_addr.symbol ? to_addr.symbol->name : "(null)";
+                    PLAN9OBJ_DBG ("[plan9obj] ADATA@0x%08x from(t=%u n=%u sidx=%u off=%lld sym=%s) to(t=%u n=%u sidx=%u off=%lld sym=%s)\n",
+                             opcode_pos,
+                             (unsigned int) from_addr.type, (unsigned int) from_addr.name, (unsigned int) from_addr.sym_index, (long long) from_addr.offset, from_sym,
+                             (unsigned int) to_addr.type, (unsigned int) to_addr.name, (unsigned int) to_addr.sym_index, (long long) to_addr.offset, to_sym);
+                }
+
+                /* Determine whether this ADATA encodes a relocation. Heuristics:
+                   - Prefer the 'to' operand as the referenced symbol (it's the value being written);
+                   - If 'to' has no symbol but the 'from' operand is not a definition (i.e. not D_STATIC/D_EXTERN),
+                     then 'from' likely encodes a symbol reference and should be relocated.
+                   - Otherwise no relocation is necessary (literal constants, local data initialization). */
+                {
+                    asymbol *rel_sym = NULL;
+                    long long rel_addend = 0;
+                    if (to_addr.symbol) {
+                        rel_sym = to_addr.symbol;
+                        rel_addend = to_addr.offset;
+                    } else if (from_addr.symbol && from_addr.type == D_OREG &&
+                               !(from_addr.name == D_STATIC || from_addr.name == D_EXTERN)) {
+                        rel_sym = from_addr.symbol;
+                        rel_addend = from_addr.offset;
                     }
-                    arelent *r = (arelent *) bfd_zalloc (abfd, sizeof (arelent));
-                    if (!r) { free (data); return false; }
-                    r->howto = &plan9obj_aarch64_abs64_howto;
-                    r->sym_ptr_ptr = (asymbol **) bfd_zalloc (abfd, sizeof (asymbol *));
-                    if (!r->sym_ptr_ptr) { free (data); return false; }
-                    *(r->sym_ptr_ptr) = from_addr.symbol;
-                    r->address = plan9_obj_tdata(abfd)->data_size - 8; /* start of this datum */
-                    r->addend = 0;
-                    plan9_obj_tdata(abfd)->data_relocs[plan9_obj_tdata(abfd)->data_reloc_count++] = r;
+
+                    /* Size the datum (assume 8-byte pointers/words for ABS64). */
+                    unsigned long long datum_start = plan9_obj_tdata(abfd)->data_size;
+                    plan9_obj_tdata(abfd)->data_size += 8;
+
+                    if (rel_sym) {
+                        if (plan9_obj_tdata(abfd)->data_reloc_count >= data_rel_cap) {
+                            long newcap = data_rel_cap * 2;
+                            arelent **nr = (arelent **) bfd_zalloc (abfd, newcap * sizeof (arelent *));
+                            if (!nr) { free (data); return false; }
+                            memcpy (nr, plan9_obj_tdata(abfd)->data_relocs, data_rel_cap * sizeof (arelent *));
+                            plan9_obj_tdata(abfd)->data_relocs = nr;
+                            data_rel_cap = newcap;
+                        }
+                        arelent *r = (arelent *) bfd_zalloc (abfd, sizeof (arelent));
+                        if (!r) { free (data); return false; }
+                        r->howto = &plan9obj_aarch64_abs64_howto;
+                        r->sym_ptr_ptr = (asymbol **) bfd_zalloc (abfd, sizeof (asymbol *));
+                        if (!r->sym_ptr_ptr) { free (data); return false; }
+                        *(r->sym_ptr_ptr) = rel_sym;
+                        r->address = (bfd_vma) datum_start;
+                        r->addend = rel_addend;
+                        PLAN9OBJ_DBG ("[plan9obj] added data-reloc sym=%s addr=0x%llx addend=%lld\n",
+                                 rel_sym?rel_sym->name:"(null)", (unsigned long long) r->address, (long long) r->addend);
+                        plan9_obj_tdata(abfd)->data_relocs[plan9_obj_tdata(abfd)->data_reloc_count++] = r;
+                    }
                 }
             } else if (opcode == AGLOBL) {
                 count_aglobl++;
@@ -533,7 +593,7 @@ parse_plan9_object (bfd *abfd)
                 const char *nm = plan9_obj_tdata(abfd)->symbols[i]->name;
                 asection *s = plan9_obj_tdata(abfd)->symbols[i]->section;
                 unsigned long long val = plan9_obj_tdata(abfd)->symbols[i]->value;
-                fprintf (stderr, "[plan9obj] sym[%u] name='%s' sec=%s val=0x%llx\n", i, nm?nm:"(null)", s?s->name:"(null)", val);
+                PLAN9OBJ_DBG ("[plan9obj] sym[%u] name='%s' sec=%s val=0x%llx\n", i, nm?nm:"(null)", s?s->name:"(null)", val);
             }
         }
     }
@@ -545,11 +605,12 @@ parse_plan9_object (bfd *abfd)
         plan9_obj_tdata(abfd)->data_section->size = plan9_obj_tdata(abfd)->data_size;
 
     /* Debug: report synthesized sizes and symbol count. */
-    fprintf (stderr, "[plan9obj] ATEXT=%u ADATA=%u AGLOBL=%u OTHER=%u -> text=%llu data=%llu syms=%u\n",
+    PLAN9OBJ_DBG ("[plan9obj] ATEXT=%u ADATA=%u AGLOBL=%u OTHER=%u -> text=%llu data=%llu syms=%u\n",
              count_atext, count_adata, count_aglobl, count_other,
              (unsigned long long) plan9_obj_tdata(abfd)->text_size,
              (unsigned long long) plan9_obj_tdata(abfd)->data_size,
              plan9_obj_tdata(abfd)->symbol_count);
+    PLAN9OBJ_DBG ("[plan9obj] relocs: text=%ld data=%ld\n", plan9_obj_tdata(abfd)->text_reloc_count, plan9_obj_tdata(abfd)->data_reloc_count);
 
     free (data);
     return true;
