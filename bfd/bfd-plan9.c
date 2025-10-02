@@ -11,14 +11,10 @@
 #include "bfdlink.h"
 #include <stdint.h>
 #include <stdio.h>
+#include <limits.h>
 #if defined(HAVE_CONFIG_H)
 #include "config.h"
 #endif
-/* For minimal builds (e.g. stripped Plan 9 only linker) we don't require the
-   separate plan9obj.c object stream recognizer. Instead we provide a very
-   small fallback object recognizer here. If plan9obj.c is present it becomes
-   unused but harmless. Optionally enable plan9obj integration by defining
-   ENABLE_PLAN9OBJ at build time and providing plan9obj.c. */
 /* Always include plan9obj.h for prototypes when wiring relocation jump table
     and to use its object recognizer. */
 #include "plan9obj.h"
@@ -38,6 +34,8 @@
 #define T_MAGIC      _MAGIC(HDR_MAGIC, 27)  /* PowerPC64 */
 #define R_MAGIC      _MAGIC(HDR_MAGIC, 28)  /* ARM64 */
 
+#define DYN_MAGIC    0x80000000u            /* dlm bit */
+
 /* Plan 9 executable header - exactly matches 9front struct Exec */
 struct plan9_exec_hdr {
     uint32_t magic;     /* Magic number */
@@ -52,6 +50,39 @@ struct plan9_exec_hdr {
 
 #define PLAN9_EXEC_HDR_SIZE 32
 
+struct plan9_file_info
+{
+    struct plan9_exec_hdr hdr;    /* On-disk header fields */
+    bfd_size_type header_size;    /* Actual header bytes in file */
+};
+
+static inline uint32_t
+plan9_base_magic (uint32_t magic)
+{
+    return magic & ~DYN_MAGIC;
+}
+
+static inline bool
+plan9_magic_is_64 (uint32_t magic)
+{
+    uint32_t base = plan9_base_magic (magic);
+    return base == R_MAGIC || base == S_MAGIC || base == T_MAGIC || base == U_MAGIC;
+}
+
+static inline bfd_size_type
+plan9_header_size_for_magic (uint32_t magic)
+{
+    return PLAN9_EXEC_HDR_SIZE + ((plan9_base_magic (magic) & HDR_MAGIC) ? 8 : 0);
+}
+
+static inline uint32_t
+plan9_entry_low_word (uint32_t magic, bfd_vma entry)
+{
+    if (plan9_base_magic (magic) & HDR_MAGIC)
+        return (uint32_t) (entry & 0x0fffffffULL);
+    return (uint32_t) entry;
+}
+
 /* Plan 9 symbol entry - from 9front struct Sym */
 struct plan9_symbol {
     uint64_t value;     /* Symbol value */
@@ -59,6 +90,313 @@ struct plan9_symbol {
     uint8_t type;       /* Symbol type */
     /* Name follows as null-terminated string */
 };
+
+struct plan9_sym_record
+{
+    const char *name;
+    bfd_vma value;
+    char type; /* Plan 9 type letter, e.g. 'T', 'D', 'B', 'L'. */
+};
+
+static bool
+plan9_classify_output_symbol (asymbol *sym, char *ptype,
+                              bfd_vma *pval, bool *is_text_symbol,
+                              bool *is_special_etext,
+                              bool *is_special_edata,
+                              bool *is_special_end)
+{
+    if (is_text_symbol)
+        *is_text_symbol = false;
+    if (is_special_etext)
+        *is_special_etext = false;
+    if (is_special_edata)
+        *is_special_edata = false;
+    if (is_special_end)
+        *is_special_end = false;
+
+    if (!sym || !sym->name || !sym->section)
+        return false;
+    if (sym->section == bfd_und_section_ptr || sym->section == bfd_com_section_ptr)
+        return false;
+
+    flagword secf = sym->section->flags;
+    char type = 0;
+    bool real_text = false;
+
+    if (sym->section == bfd_abs_section_ptr)
+    {
+        if (strcmp (sym->name, "_etext") == 0)
+        {
+            type = 'T';
+            if (is_special_etext)
+                *is_special_etext = true;
+        }
+        else if (strcmp (sym->name, "_edata") == 0)
+        {
+            type = 'D';
+            if (is_special_edata)
+                *is_special_edata = true;
+        }
+        else if (strcmp (sym->name, "_end") == 0)
+        {
+            type = 'B';
+            if (is_special_end)
+                *is_special_end = true;
+        }
+        else
+            return false;
+    }
+    else if (secf & SEC_CODE)
+    {
+        type = (sym->flags & BSF_GLOBAL) ? 'T' : 'L';
+        real_text = true;
+    }
+    else if ((secf & SEC_DATA) || (secf & SEC_HAS_CONTENTS))
+        type = 'D';
+    else if ((secf & SEC_ALLOC) && !(secf & SEC_HAS_CONTENTS))
+        type = 'B';
+    else
+        return false;
+
+    if (ptype)
+        *ptype = type;
+    if (is_text_symbol && real_text)
+        *is_text_symbol = true;
+    if (pval)
+        *pval = bfd_asymbol_value (sym);
+    return true;
+}
+
+static bool
+plan9_collect_output_symbols (bfd *abfd, bool is64,
+                              struct plan9_sym_record **out_records,
+                              unsigned int *out_count,
+                              bfd_size_type *out_symsize)
+{
+    asymbol **outs = bfd_get_outsymbols (abfd);
+    unsigned int outcount = abfd->symcount;
+    asection *text_sec = bfd_get_section_by_name (abfd, ".text");
+    asection *data_sec = bfd_get_section_by_name (abfd, ".data");
+    asection *bss_sec = bfd_get_section_by_name (abfd, ".bss");
+    bool have_real_text = false;
+    bool have_etext = false;
+    bool have_edata = false;
+    bool have_end = false;
+    unsigned int actual_count = 0;
+
+    if (outs && outcount > 0)
+    {
+        for (unsigned int i = 0; i < outcount; i++)
+        {
+            char type;
+            bfd_vma value;
+            bool is_text = false;
+            bool is_sp_etext = false;
+            bool is_sp_edata = false;
+            bool is_sp_end = false;
+            if (!plan9_classify_output_symbol (outs[i], &type, &value,
+                                               &is_text, &is_sp_etext,
+                                               &is_sp_edata, &is_sp_end))
+                continue;
+            actual_count++;
+            if (is_text)
+                have_real_text = true;
+            if (is_sp_etext)
+                have_etext = true;
+            if (is_sp_edata)
+                have_edata = true;
+            if (is_sp_end)
+                have_end = true;
+        }
+    }
+
+    bool add_etext = (text_sec != NULL) && !have_etext;
+    bool add_edata = !have_edata;
+    bool add_end = !have_end;
+    bool add_main = !have_real_text && (abfd->start_address != 0);
+
+    unsigned int total = actual_count
+        + (add_etext ? 1 : 0)
+        + (add_edata ? 1 : 0)
+        + (add_end ? 1 : 0)
+        + (add_main ? 1 : 0);
+
+    if (out_count)
+        *out_count = 0;
+    if (out_symsize)
+        *out_symsize = 0;
+    if (out_records)
+        *out_records = NULL;
+
+    if (total == 0)
+        return true;
+
+    struct plan9_sym_record *records =
+        bfd_zalloc (abfd, total * sizeof (*records));
+    if (!records)
+        return false;
+
+    unsigned int idx = 0;
+    if (outs && outcount > 0)
+    {
+        for (unsigned int i = 0; i < outcount; i++)
+        {
+            char type;
+            bfd_vma value;
+            bool is_text = false;
+            bool is_sp_etext = false;
+            bool is_sp_edata = false;
+            bool is_sp_end = false;
+            if (!plan9_classify_output_symbol (outs[i], &type, &value,
+                                               &is_text, &is_sp_etext,
+                                               &is_sp_edata, &is_sp_end))
+                continue;
+            records[idx].name = outs[i]->name;
+            records[idx].value = value;
+            records[idx].type = type;
+            idx++;
+        }
+    }
+
+    bfd_vma text_vma = text_sec ? text_sec->vma : abfd->start_address;
+    bfd_vma text_sz = text_sec ? text_sec->size : 0;
+    bfd_vma data_vma = data_sec ? data_sec->vma : (text_vma + text_sz);
+    bfd_vma data_sz = data_sec ? data_sec->size : 0;
+    bfd_vma bss_vma = bss_sec ? bss_sec->vma : (data_vma + data_sz);
+    bfd_vma bss_sz = bss_sec ? bss_sec->size : 0;
+    bfd_vma etext = text_vma + text_sz;
+    bfd_vma edata = data_vma + data_sz;
+    bfd_vma end = bss_vma + bss_sz;
+
+    if (add_etext)
+    {
+        records[idx].name = "_etext";
+        records[idx].value = etext;
+        records[idx].type = 'T';
+        idx++;
+    }
+    if (add_edata)
+    {
+        records[idx].name = "_edata";
+        records[idx].value = edata;
+        records[idx].type = 'D';
+        idx++;
+    }
+    if (add_end)
+    {
+        records[idx].name = "_end";
+        records[idx].value = end;
+        records[idx].type = 'B';
+        idx++;
+    }
+    if (add_main)
+    {
+        records[idx].name = "main";
+        records[idx].value = abfd->start_address;
+        records[idx].type = 'T';
+        idx++;
+    }
+
+    bfd_size_type symsize = 0;
+    for (unsigned int i = 0; i < idx; i++)
+        symsize += (is64 ? 8 : 4) + 1
+            + (bfd_size_type) (strlen (records[i].name) + 1);
+
+    if (out_records)
+        *out_records = records;
+    if (out_count)
+        *out_count = idx;
+    if (out_symsize)
+        *out_symsize = symsize;
+    return true;
+}
+
+static bool
+plan9_write_symbol_records (bfd *abfd, file_ptr pos, bool is64,
+                            const struct plan9_sym_record *records,
+                            unsigned int count)
+{
+    if (count == 0 || !records)
+        return true;
+
+    if (bfd_seek (abfd, pos, SEEK_SET) != 0)
+        return false;
+
+    for (unsigned int i = 0; i < count; i++)
+    {
+        bfd_vma val = records[i].value;
+        if (is64)
+        {
+            uint32_t hi = (uint32_t) (val >> 32);
+            uint32_t lo = (uint32_t) (val & 0xffffffffu);
+            bfd_byte w[8];
+            bfd_putb32 (hi, w);
+            bfd_putb32 (lo, w + 4);
+            if (bfd_write (w, 8, abfd) != 8)
+                return false;
+        }
+        else
+        {
+            uint32_t lo = (uint32_t) (val & 0xffffffffu);
+            bfd_byte w[4];
+            bfd_putb32 (lo, w);
+            if (bfd_write (w, 4, abfd) != 4)
+                return false;
+        }
+
+        uint8_t type_plus = (uint8_t) (records[i].type + 0x80);
+        if (bfd_write (&type_plus, 1, abfd) != 1)
+            return false;
+
+        size_t nlen = strlen (records[i].name) + 1;
+        if (bfd_write (records[i].name, nlen, abfd) != (bfd_size_type) nlen)
+            return false;
+    }
+
+    return true;
+}
+
+static bool
+plan9_write_exec_header (bfd *abfd, uint32_t magic, bfd_size_type textsz,
+                         bfd_size_type datasz, bfd_size_type bsssz,
+                         bfd_size_type symsz)
+{
+    bfd_size_type header_size = plan9_header_size_for_magic (magic);
+    bfd_byte header[PLAN9_EXEC_HDR_SIZE];
+    memset (header, 0, sizeof (header));
+    bfd_putb32 (magic, header);
+    bfd_putb32 ((uint32_t) textsz, header + 4);
+    bfd_putb32 ((uint32_t) datasz, header + 8);
+    bfd_putb32 ((uint32_t) bsssz, header + 12);
+    bfd_putb32 ((uint32_t) symsz, header + 16);
+    bfd_putb32 (plan9_entry_low_word (magic, abfd->start_address), header + 20);
+    bfd_putb32 (0, header + 24);
+    bfd_putb32 (0, header + 28);
+
+    if (bfd_seek (abfd, 0, SEEK_SET) != 0)
+        return false;
+    if (bfd_write (header, PLAN9_EXEC_HDR_SIZE, abfd) != PLAN9_EXEC_HDR_SIZE)
+        return false;
+
+    if (header_size > PLAN9_EXEC_HDR_SIZE)
+    {
+        bfd_byte entry_buf[8];
+        bfd_putb64 (abfd->start_address, entry_buf);
+        if (bfd_write (entry_buf, sizeof (entry_buf), abfd) != sizeof (entry_buf))
+            return false;
+    }
+
+    {
+        struct plan9_file_info *info = (struct plan9_file_info *) abfd->tdata.any;
+        if (info)
+        {
+            memcpy (&info->hdr, header, sizeof (info->hdr));
+            info->header_size = header_size;
+        }
+    }
+
+    return true;
+}
 
 /* Architecture descriptions */
 struct plan9_arch_info {
@@ -81,6 +419,35 @@ static const struct plan9_arch_info plan9_archs[] = {
     { 0, NULL, bfd_arch_unknown, 0, 0, NULL }
 };
 
+static uint32_t
+plan9_guess_magic_from_bfd (bfd *abfd)
+{
+    if (abfd && abfd->arch_info)
+    {
+        const struct plan9_arch_info *arch_info;
+        for (arch_info = plan9_archs; arch_info->name; ++arch_info)
+            if (arch_info->arch == abfd->arch_info->arch
+                && arch_info->mach == abfd->arch_info->mach)
+                return arch_info->magic;
+    }
+    return R_MAGIC;
+}
+
+static int
+plan9_bfd_sizeof_headers (bfd *abfd, struct bfd_link_info *info ATTRIBUTE_UNUSED)
+{
+    struct plan9_file_info *finfo = (struct plan9_file_info *) abfd->tdata.any;
+    uint32_t magic = 0;
+    if (finfo && bfd_getb32 (&finfo->hdr.magic) != 0)
+        magic = bfd_getb32 (&finfo->hdr.magic);
+    else
+        magic = plan9_guess_magic_from_bfd (abfd);
+    bfd_size_type hs = plan9_header_size_for_magic (magic);
+    if (hs > (bfd_size_type) INT_MAX)
+        hs = (bfd_size_type) INT_MAX;
+    return (int) hs;
+}
+
 /* Forward declarations */
 static bool plan9_mkobject (bfd *);
 static bool plan9_write_object_contents (bfd *);
@@ -93,34 +460,15 @@ static bool plan9_set_arch_mach (bfd *, enum bfd_architecture, unsigned long);
 
 /* BFD target vector functions */
 
-/* (Removed unused generic plan9_object_p helper)
-     Provide a local minimalist object recognizer for the generic Plan 9
-     object stream target vector.  This only validates the two-byte opcode
-     prefix pattern used by 9front compilers (borrowed from earlier
-     plan9obj.c logic) and marks the bfd as an object file. */
-static bfd_cleanup
-plan9_fallback_object_p (bfd *abfd)
-{
-    unsigned char buf[5];
-    if (bfd_seek (abfd, 0, SEEK_SET) != 0)
-        return NULL;
-    if (bfd_read (buf, 5, abfd) != 5)
-        return NULL;
-    /* Check for the two magic byte arrangements identifying a Plan 9 object. */
-    if ((buf[2] == 1 && buf[3] == '<') || (buf[3] == 1 && buf[4] == '<'))
-    {
-        bfd_set_arch_mach (abfd, bfd_arch_unknown, 0);
-        return _bfd_no_cleanup;
-    }
-    return NULL;
-}
-
 /* Target-specific object recognition functions */
 static bfd_cleanup plan9_object_p_magic (bfd *abfd, uint32_t expected_magic)
 {
     struct plan9_exec_hdr hdr;
+    bfd_byte entry_extra[8];
     const struct plan9_arch_info *arch_info;
     uint32_t magic;
+    bfd_vma entry_vma;
+    bfd_size_type header_size;
     
     if (bfd_seek (abfd, 0, SEEK_SET) != 0)
         return NULL;
@@ -129,14 +477,33 @@ static bfd_cleanup plan9_object_p_magic (bfd *abfd, uint32_t expected_magic)
     
     /* Plan 9 uses big-endian format for headers */
     magic = bfd_getb32 (&hdr.magic);
+    header_size = plan9_header_size_for_magic (magic);
+    entry_vma = (bfd_vma) bfd_getb32 (&hdr.entry);
+    if (header_size > PLAN9_EXEC_HDR_SIZE)
+    {
+        if (bfd_read (entry_extra, sizeof (entry_extra), abfd) != sizeof (entry_extra))
+            return NULL;
+        bfd_vma entry64 = bfd_getb64 (entry_extra);
+        if (((entry64 & 0xffffffffULL) == entry_vma) || entry64 == 0 || entry64 == entry_vma)
+        {
+            entry_vma = entry64;
+        }
+        else
+        {
+            /* Treat the extra bytes as the beginning of the text segment. */
+            if (bfd_seek (abfd, -(bfd_signed_vma) sizeof (entry_extra), SEEK_CUR) != 0)
+                return NULL;
+            header_size = PLAN9_EXEC_HDR_SIZE;
+        }
+    }
     
     /* Check if this matches the expected magic for this target */
-    if (magic != expected_magic)
+    if ((magic & ~DYN_MAGIC) != (expected_magic & ~DYN_MAGIC))
         return NULL;
     
     /* Find matching architecture */
     for (arch_info = plan9_archs; arch_info->name; arch_info++) {
-        if (arch_info->magic == magic) {
+        if ((arch_info->magic & ~DYN_MAGIC) == (magic & ~DYN_MAGIC)) {
             /* Set architecture info */
             bfd_set_arch_mach (abfd, arch_info->arch, arch_info->mach);
             
@@ -150,9 +517,9 @@ static bfd_cleanup plan9_object_p_magic (bfd *abfd, uint32_t expected_magic)
                 
                 text_sec->flags = SEC_ALLOC | SEC_LOAD | SEC_CODE | SEC_HAS_CONTENTS;
                 text_sec->size = bfd_getb32 (&hdr.text);
-                text_sec->vma = bfd_getb32 (&hdr.entry);
+                text_sec->vma = entry_vma;
                 text_sec->lma = text_sec->vma;
-                text_sec->filepos = PLAN9_EXEC_HDR_SIZE;
+                text_sec->filepos = header_size;
             }
             
             /* Create data section */  
@@ -162,9 +529,9 @@ static bfd_cleanup plan9_object_p_magic (bfd *abfd, uint32_t expected_magic)
                 
                 data_sec->flags = SEC_ALLOC | SEC_LOAD | SEC_DATA | SEC_HAS_CONTENTS;
                 data_sec->size = bfd_getb32 (&hdr.data);
-                data_sec->vma = bfd_getb32 (&hdr.entry) + bfd_getb32 (&hdr.text);
+                data_sec->vma = entry_vma + bfd_getb32 (&hdr.text);
                 data_sec->lma = data_sec->vma;
-                data_sec->filepos = PLAN9_EXEC_HDR_SIZE + bfd_getb32 (&hdr.text);
+                data_sec->filepos = header_size + bfd_getb32 (&hdr.text);
             }
             
             /* Create BSS section */
@@ -174,17 +541,23 @@ static bfd_cleanup plan9_object_p_magic (bfd *abfd, uint32_t expected_magic)
                 
                 bss_sec->flags = SEC_ALLOC;
                 bss_sec->size = bfd_getb32 (&hdr.bss);
-                bss_sec->vma = bfd_getb32 (&hdr.entry) + bfd_getb32 (&hdr.text) + bfd_getb32 (&hdr.data);
+                bss_sec->vma = entry_vma + bfd_getb32 (&hdr.text) + bfd_getb32 (&hdr.data);
                 bss_sec->lma = bss_sec->vma;
             }
             
             /* Store header info for later use */
-            abfd->tdata.any = bfd_alloc (abfd, sizeof (struct plan9_exec_hdr));
-            if (!abfd->tdata.any) return NULL;
-            memcpy (abfd->tdata.any, &hdr, sizeof (struct plan9_exec_hdr));
+            {
+                struct plan9_file_info *info =
+                    (struct plan9_file_info *) bfd_alloc (abfd, sizeof (struct plan9_file_info));
+                if (!info)
+                    return NULL;
+                memcpy (&info->hdr, &hdr, sizeof (hdr));
+                info->header_size = header_size;
+                abfd->tdata.any = info;
+            }
             
             /* Set the start address */
-            abfd->start_address = bfd_getb32 (&hdr.entry);
+            abfd->start_address = entry_vma;
             
             /* Report success; format is already set by framework. */
             return _bfd_no_cleanup;
@@ -206,281 +579,82 @@ static bfd_cleanup plan9_power64_object_p (bfd *abfd) { return plan9_object_p_ma
 static bool
 plan9_mkobject (bfd *abfd)
 {
-    abfd->tdata.any = bfd_zalloc (abfd, sizeof (struct plan9_exec_hdr));
-    return abfd->tdata.any != NULL;
+    struct plan9_file_info *info;
+    info = (struct plan9_file_info *) bfd_zalloc (abfd, sizeof (struct plan9_file_info));
+    if (!info)
+        return false;
+    info->header_size = PLAN9_EXEC_HDR_SIZE;
+    abfd->tdata.any = info;
+    return true;
 }
 
 /* Write Plan 9 object file */
 static bool
 plan9_write_object_contents (bfd *abfd)
 {
-    struct plan9_exec_hdr *hdr = (struct plan9_exec_hdr *) abfd->tdata.any;
-    struct plan9_exec_hdr disk_hdr;
+    struct plan9_file_info *info = (struct plan9_file_info *) abfd->tdata.any;
+    struct plan9_exec_hdr *hdr;
     asection *text_sec, *data_sec, *bss_sec;
-    /* Symbol table emission */
-    asymbol **outs = bfd_get_outsymbols (abfd);
-    unsigned int outcount = abfd->symcount;
-    bool have_outsyms = (outs != NULL && outcount > 0);
-    /* Track presence of common linker-defined boundary symbols. */
-    bool outs_has_etext = false, outs_has_edata = false, outs_has_end = false;
     bfd_size_type symsize = 0;
-    bool is64 = false;
-    unsigned int i;
-    file_ptr sym_filepos;
+    struct plan9_sym_record *records = NULL;
+    unsigned int record_count = 0;
+    uint32_t magic;
+    bool is64;
+    bfd_size_type header_size;
     
-    if (!hdr)
+    if (!info)
         return false;
+    hdr = &info->hdr;
     
     /* Find sections */
     text_sec = bfd_get_section_by_name (abfd, ".text");
     data_sec = bfd_get_section_by_name (abfd, ".data");  
     bss_sec = bfd_get_section_by_name (abfd, ".bss");
     
-        /* Determine if we should emit 64-bit symbol values based on magic. */
-        {
-                uint32_t magic = hdr->magic;
-                if (magic == R_MAGIC || magic == S_MAGIC || magic == T_MAGIC || magic == U_MAGIC)
-                        is64 = true;
-        }
-
-                 /* Compute symbol table size from outsymbols, if any.  We only
-                        emit a subset: defined symbols in .text/.data/.bss. */
-                         if (have_outsyms)
-                     {
-                         for (i = 0; i < outcount; i++)
-                             {
-                                 asymbol *s = outs[i];
-                                 if (!s || !s->name || !s->section)
-                                     continue;
-                                         /* Mark boundary names if present. */
-                                         if (strcmp (s->name, "_etext") == 0) outs_has_etext = true;
-                                         else if (strcmp (s->name, "_edata") == 0) outs_has_edata = true;
-                                         else if (strcmp (s->name, "_end") == 0) outs_has_end = true;
-
-                                         /* Skip undefined/debug/common. Allow ABS only for special names
-                                                (_etext/_edata/_end) which we map below. */
-                                         if (s->section == bfd_und_section_ptr
-                                                 || s->section == bfd_com_section_ptr)
-                                             continue;
-
-                                 /* Map to a Plan 9 type letter; skip if not one we handle. */
-                                 char t = 0;
-                                 flagword secf = s->section->flags;
-                                         if (s->section == bfd_abs_section_ptr)
-                                             {
-                                                 /* Map ABS boundary names to their types. */
-                                                 if (strcmp (s->name, "_etext") == 0)
-                                                     t = 'T';
-                                                 else if (strcmp (s->name, "_edata") == 0)
-                                                     t = 'D';
-                                                 else if (strcmp (s->name, "_end") == 0)
-                                                     t = 'B';
-                                                 else
-                                                     t = 0;
-                                             }
-                                         else if (secf & SEC_CODE)
-                                     t = (s->flags & BSF_GLOBAL) ? 'T' : 'L';
-                                 else if ((secf & SEC_DATA) || (secf & SEC_HAS_CONTENTS))
-                                     t = 'D';
-                                 else if ((secf & SEC_ALLOC) && !(secf & SEC_HAS_CONTENTS))
-                                     t = 'B';
-                                 if (t == 0)
-                                     continue;
-
-                                 /* value + type byte + NUL-terminated name */
-                                 symsize += (is64 ? 8 : 4); /* value */
-                                 symsize += 1;              /* type */
-                                 symsize += (bfd_size_type) (strlen (s->name) + 1);
-                             }
-                     }
-                         /* Add synthetic boundary symbols if not already present. */
-                         {
-                             bfd_vma text_vma = text_sec ? text_sec->vma : 0;
-                             bfd_size_type textsz = text_sec ? text_sec->size : 0;
-                             bfd_vma data_vma = data_sec ? data_sec->vma : (text_vma + textsz);
-                             bfd_size_type datasz = data_sec ? data_sec->size : 0;
-                             bfd_size_type bsssz  = bss_sec ? bss_sec->size : 0;
-
-                             if (!outs_has_etext && text_sec)
-                                 symsize += (is64 ? 8 : 4) + 1 + (bfd_size_type) (strlen ("_etext") + 1);
-                             if (!outs_has_edata)
-                                 symsize += (is64 ? 8 : 4) + 1 + (bfd_size_type) (strlen ("_edata") + 1);
-                             if (!outs_has_end)
-                                 symsize += (is64 ? 8 : 4) + 1 + (bfd_size_type) (strlen ("_end") + 1);
-                             (void) data_vma; (void) datasz; (void) bsssz; /* values computed later */
-                         }
-                 /* If the linker didn't populate outsymbols (or none qualified),
-                        synthesize a minimal table with just a global text symbol
-                        "main" at the entry point. */
-                 if (symsize == 0 && abfd->start_address != 0)
-                     {
-                         const char *fallback = "main";
-                         symsize = (is64 ? 8 : 4) + 1 + (bfd_size_type) (strlen (fallback) + 1);
-                     }
-
-        /* Populate header */
-    memset (&disk_hdr, 0, sizeof (disk_hdr));
-    bfd_putb32 (hdr->magic, &disk_hdr.magic);
-    bfd_putb32 (text_sec ? text_sec->size : 0, &disk_hdr.text);
-    bfd_putb32 (data_sec ? data_sec->size : 0, &disk_hdr.data);
-    bfd_putb32 (bss_sec ? bss_sec->size : 0, &disk_hdr.bss);
-        bfd_putb32 (symsize, &disk_hdr.syms);
-    bfd_putb32 (abfd->start_address, &disk_hdr.entry);
-    /* TODO: Calculate syms, spsz, pcsz */
-    
-    /* Write header */
-    if (bfd_seek (abfd, 0, SEEK_SET) != 0)
+    magic = hdr ? bfd_getb32 (&hdr->magic) : 0;
+    if (magic == 0)
+        magic = plan9_guess_magic_from_bfd (abfd);
+    is64 = plan9_magic_is_64 (magic);
+    header_size = plan9_header_size_for_magic (magic);
+    info->header_size = header_size;
+    if (!plan9_collect_output_symbols (abfd, is64, &records, &record_count, &symsize))
         return false;
-    if (bfd_write (&disk_hdr, PLAN9_EXEC_HDR_SIZE, abfd) != PLAN9_EXEC_HDR_SIZE)
+
+    if (!plan9_write_exec_header (abfd, magic,
+                                  text_sec ? text_sec->size : 0,
+                                  data_sec ? data_sec->size : 0,
+                                  bss_sec ? bss_sec->size : 0,
+                                  symsize))
         return false;
         
     /* Write sections */
-    /* Write text section */
-    if (text_sec && text_sec->size > 0) {
-        if (bfd_seek (abfd, PLAN9_EXEC_HDR_SIZE, SEEK_SET) != 0)
+    /* Write text section if contents are explicitly provided (e.g. objcopy).
+       During a full link, _bfd_generic_final_link already flushed the
+       relocated section to disk, and contents may be NULL; in that case we
+       must leave the existing bytes intact rather than zero-filling. */
+    if (text_sec && text_sec->size > 0 && text_sec->contents) {
+        if (bfd_seek (abfd, header_size, SEEK_SET) != 0)
             return false;
-        
-        if (text_sec->contents) {
-            if (bfd_write (text_sec->contents, text_sec->size, abfd) != text_sec->size)
-                return false;
-        } else {
-            /* Write zeros if no content provided */
-            unsigned char *zeros = bfd_zalloc (abfd, text_sec->size);
-            if (!zeros) return false;
-            if (bfd_write (zeros, text_sec->size, abfd) != text_sec->size)
-                return false;
-        }
+        if (bfd_write (text_sec->contents, text_sec->size, abfd) != text_sec->size)
+            return false;
+    }
+
+    /* Same policy for data: only overwrite when buffers are present. */
+    if (data_sec && data_sec->size > 0 && data_sec->contents) {
+        if (bfd_seek (abfd, header_size + (text_sec ? text_sec->size : 0), SEEK_SET) != 0)
+            return false;
+        if (bfd_write (data_sec->contents, data_sec->size, abfd) != data_sec->size)
+            return false;
     }
     
-    /* Write data section */
-    if (data_sec && data_sec->size > 0) {
-        if (bfd_seek (abfd, PLAN9_EXEC_HDR_SIZE + (text_sec ? text_sec->size : 0), SEEK_SET) != 0)
+    if (record_count > 0)
+    {
+        file_ptr sym_filepos = header_size
+            + (file_ptr) (text_sec ? text_sec->size : 0)
+            + (file_ptr) (data_sec ? data_sec->size : 0);
+        if (!plan9_write_symbol_records (abfd, sym_filepos, is64, records, record_count))
             return false;
-        
-        if (data_sec->contents) {
-            if (bfd_write (data_sec->contents, data_sec->size, abfd) != data_sec->size)
-                return false;
-        } else {
-            /* Write zeros if no content provided */
-            unsigned char *zeros = bfd_zalloc (abfd, data_sec->size);
-            if (!zeros) return false;
-            if (bfd_write (zeros, data_sec->size, abfd) != data_sec->size)
-                return false;
-        }
     }
-    
-        /* Now write the symbol table (if any), immediately following data. */
-        sym_filepos = PLAN9_EXEC_HDR_SIZE
-                                + (file_ptr) (text_sec ? text_sec->size : 0)
-                                + (file_ptr) (data_sec ? data_sec->size : 0);
-
-                        if (symsize > 0)
-                        {
-                                if (bfd_seek (abfd, sym_filepos, SEEK_SET) != 0)
-                                        return false;
-
-                                                if (have_outsyms)
-                                    {
-                                        for (i = 0; i < outcount; i++)
-                                            {
-                                                asymbol *s = outs[i];
-                                                if (!s || !s->name || !s->section)
-                                                    continue;
-                                                                if (s->section == bfd_und_section_ptr
-                                                                        || s->section == bfd_com_section_ptr)
-                                                    continue;
-
-                                                char t = 0;
-                                                flagword secf = s->section->flags;
-                                                                if (s->section == bfd_abs_section_ptr)
-                                                                    {
-                                                                        if (strcmp (s->name, "_etext") == 0)
-                                                                            t = 'T';
-                                                                        else if (strcmp (s->name, "_edata") == 0)
-                                                                            t = 'D';
-                                                                        else if (strcmp (s->name, "_end") == 0)
-                                                                            t = 'B';
-                                                                        else
-                                                                            t = 0;
-                                                                    }
-                                                                else if (secf & SEC_CODE)
-                                                    t = (s->flags & BSF_GLOBAL) ? 'T' : 'L';
-                                                else if ((secf & SEC_DATA) || (secf & SEC_HAS_CONTENTS))
-                                                    t = 'D';
-                                                else if ((secf & SEC_ALLOC) && !(secf & SEC_HAS_CONTENTS))
-                                                    t = 'B';
-                                                if (t == 0)
-                                                    continue;
-
-                                                /* Compute absolute value: section VMA + section-relative value. */
-                                                                bfd_vma aval = bfd_asymbol_value (s);
-                                                if (is64)
-                                                    {
-                                                        uint32_t hi = (uint32_t) (aval >> 32);
-                                                        uint32_t lo = (uint32_t) (aval & 0xffffffffu);
-                                                        bfd_byte w[8];
-                                                        bfd_putb32 (hi, w);
-                                                        bfd_putb32 (lo, w + 4);
-                                                        if (bfd_write (w, 8, abfd) != 8)
-                                                            return false;
-                                                    }
-                                                else
-                                                    {
-                                                        uint32_t lo = (uint32_t) (aval & 0xffffffffu);
-                                                        bfd_byte w[4];
-                                                        bfd_putb32 (lo, w);
-                                                        if (bfd_write (w, 4, abfd) != 4)
-                                                            return false;
-                                                    }
-
-                                                /* Type byte is ASCII letter + 0x80. */
-                                                {
-                                                    uint8_t type_plus = (uint8_t) (t + 0x80);
-                                                    if (bfd_write (&type_plus, 1, abfd) != 1)
-                                                        return false;
-                                                }
-
-                                                /* Name including trailing NUL. */
-                                                {
-                                                    size_t nlen = strlen (s->name) + 1;
-                                                    if (bfd_write (s->name, nlen, abfd) != (bfd_size_type) nlen)
-                                                        return false;
-                                                }
-                                            }
-                                                        }
-                                else
-                                    {
-                                        /* Fallback: single T main at start address. */
-                                        const char *name = "main";
-                                        bfd_vma aval = abfd->start_address;
-                                        if (is64)
-                                            {
-                                                uint32_t hi = (uint32_t) (aval >> 32);
-                                                uint32_t lo = (uint32_t) (aval & 0xffffffffu);
-                                                bfd_byte w[8];
-                                                bfd_putb32 (hi, w);
-                                                bfd_putb32 (lo, w + 4);
-                                                if (bfd_write (w, 8, abfd) != 8)
-                                                    return false;
-                                            }
-                                        else
-                                            {
-                                                uint32_t lo = (uint32_t) (aval & 0xffffffffu);
-                                                bfd_byte w[4];
-                                                bfd_putb32 (lo, w);
-                                                if (bfd_write (w, 4, abfd) != 4)
-                                                    return false;
-                                            }
-                                        uint8_t type_plus = (uint8_t) ('T' + 0x80);
-                                        if (bfd_write (&type_plus, 1, abfd) != 1)
-                                            return false;
-                                        {
-                                            size_t nlen = strlen (name) + 1;
-                                            if (bfd_write (name, nlen, abfd) != (bfd_size_type) nlen)
-                                                return false;
-                                        }
-                                    }
-                        }
 
         /* Note: BSS section is not written (zero-initialized at runtime). */
     
@@ -493,11 +667,11 @@ plan9_write_object_contents (bfd *abfd)
 static long
 plan9_get_symtab_upper_bound (bfd *abfd)
 {
-    struct plan9_exec_hdr *hdr = (struct plan9_exec_hdr *) abfd->tdata.any;
-    if (!hdr) return -1;
+    struct plan9_file_info *info = (struct plan9_file_info *) abfd->tdata.any;
+    if (!info) return -1;
     
     /* Rough estimate - Plan 9 symbols are variable length */
-    return (bfd_getb32 (&hdr->syms) / 8 + 1) * sizeof (asymbol *);
+    return (bfd_getb32 (&info->hdr.syms) / 8 + 1) * sizeof (asymbol *);
 }
 
 static long  
@@ -512,7 +686,8 @@ plan9_canonicalize_symtab (bfd *abfd, asymbol **syms)
          name: NUL-terminated string, except for 'z'/'Z' which use a two-byte-pair
                encoding terminated by two consecutive zero bytes.
        - repeat until syms bytes consumed. */
-    struct plan9_exec_hdr *hdr = (struct plan9_exec_hdr *) abfd->tdata.any;
+    struct plan9_file_info *info = (struct plan9_file_info *) abfd->tdata.any;
+    struct plan9_exec_hdr *hdr;
     asection *text_sec = bfd_get_section_by_name (abfd, ".text");
     asection *data_sec = bfd_get_section_by_name (abfd, ".data");
     asection *bss_sec = bfd_get_section_by_name (abfd, ".bss");
@@ -523,10 +698,12 @@ plan9_canonicalize_symtab (bfd *abfd, asymbol **syms)
     file_ptr save_pos;
     uint32_t magic = 0;
     bool is64 = false;
+    bfd_size_type header_size = PLAN9_EXEC_HDR_SIZE;
     /* file alignment not applied to file offsets here */
 
-    if (!hdr)
+    if (!info)
         return 0;
+    hdr = &info->hdr;
 
     symsz = bfd_getb32 (&hdr->syms);
     if (symsz == 0)
@@ -536,13 +713,13 @@ plan9_canonicalize_symtab (bfd *abfd, asymbol **syms)
        Note: for these 9front samples the writers do not pad file offsets
        to INITRND between text and data. */
     magic = bfd_getb32 (&hdr->magic);
-    off = PLAN9_EXEC_HDR_SIZE + (file_ptr) bfd_getb32 (&hdr->text)
+    header_size = info->header_size ? info->header_size : plan9_header_size_for_magic (magic);
+    off = header_size + (file_ptr) bfd_getb32 (&hdr->text)
         + (file_ptr) bfd_getb32 (&hdr->data);
 
     /* Decide whether values are 64-bit (writers emit an extra high word).
        Use header magic to detect 64-bit arches. */
-    if (magic == R_MAGIC || magic == S_MAGIC || magic == T_MAGIC || magic == U_MAGIC)
-        is64 = true;
+    is64 = plan9_magic_is_64 (magic);
 
     save_pos = bfd_tell (abfd);
     if (bfd_seek (abfd, off, SEEK_SET) != 0)
@@ -714,6 +891,7 @@ static bool
 plan9_get_section_contents (bfd *abfd, sec_ptr section, void *location, 
                            file_ptr offset, bfd_size_type count)
 {
+    struct plan9_file_info *info;
     struct plan9_exec_hdr *hdr;
     file_ptr file_offset;
     file_ptr current_pos;
@@ -725,25 +903,31 @@ plan9_get_section_contents (bfd *abfd, sec_ptr section, void *location,
     if (section->flags & SEC_IN_MEMORY)
         return _bfd_generic_get_section_contents (abfd, section, location, offset, count);
     
-    hdr = (struct plan9_exec_hdr *) abfd->tdata.any;
-    if (!hdr)
+    info = (struct plan9_file_info *) abfd->tdata.any;
+    if (!info)
         return false;
+    hdr = &info->hdr;
     
     /* Save current file position */
     current_pos = bfd_tell (abfd);
     
     /* Calculate file position for this section */
-    if (strcmp (section->name, ".text") == 0) {
-        file_offset = PLAN9_EXEC_HDR_SIZE + offset;
-    } else if (strcmp (section->name, ".data") == 0) {
-        file_offset = PLAN9_EXEC_HDR_SIZE + bfd_getb32 (&hdr->text) + offset;
-    } else {
-        /* BSS section has no file representation */
-        if (strcmp (section->name, ".bss") == 0) {
-            memset (location, 0, count);
-            return true;
+    {
+        uint32_t magic = bfd_getb32 (&hdr->magic);
+        bfd_size_type header_size = info->header_size ? info->header_size : plan9_header_size_for_magic (magic);
+
+        if (strcmp (section->name, ".text") == 0) {
+            file_offset = header_size + offset;
+        } else if (strcmp (section->name, ".data") == 0) {
+            file_offset = header_size + bfd_getb32 (&hdr->text) + offset;
+        } else {
+            /* BSS section has no file representation */
+            if (strcmp (section->name, ".bss") == 0) {
+                memset (location, 0, count);
+                return true;
+            }
+            return false;
         }
-        return false;
     }
     
     /* Seek to the correct position */
@@ -766,18 +950,20 @@ static bool
 plan9_set_arch_mach (bfd *abfd, enum bfd_architecture arch, unsigned long mach)
 {
     const struct plan9_arch_info *arch_info;
-    struct plan9_exec_hdr *hdr;
+    struct plan9_file_info *info;
     
     /* Find matching Plan 9 architecture */
     for (arch_info = plan9_archs; arch_info->name; arch_info++) {
         if (arch_info->arch == arch && arch_info->mach == mach) {
             if (!abfd->tdata.any) {
-                abfd->tdata.any = bfd_zalloc (abfd, sizeof (struct plan9_exec_hdr));
-                if (!abfd->tdata.any) return false;
+                info = (struct plan9_file_info *) bfd_zalloc (abfd, sizeof (struct plan9_file_info));
+                if (!info)
+                    return false;
+                info->header_size = PLAN9_EXEC_HDR_SIZE;
+                abfd->tdata.any = info;
             }
-            
-            hdr = (struct plan9_exec_hdr *) abfd->tdata.any;
-            hdr->magic = arch_info->magic;
+            info = (struct plan9_file_info *) abfd->tdata.any;
+            bfd_putb32 (arch_info->magic, &info->hdr.magic);
             
             return bfd_default_set_arch_mach (abfd, arch, mach);
         }
@@ -891,7 +1077,7 @@ plan9_print_symbol (bfd *abfd,
 /* These are used by both the Plan 9 executable targets (PLAN9_TARGET) and
     our plan9-object backend. Keeping them generic avoids setting
     bfd_error_invalid_operation during early ld setup. */
-#define plan9_sizeof_headers                 _bfd_nolink_sizeof_headers
+#define plan9_sizeof_headers                 plan9_bfd_sizeof_headers
 #define plan9_bfd_get_relocated_section_contents bfd_generic_get_relocated_section_contents
 #define plan9_bfd_relax_section              bfd_generic_relax_section
 #define plan9_bfd_link_hash_table_create     _bfd_generic_link_hash_table_create
@@ -908,16 +1094,16 @@ plan9_bfd_final_link (bfd *abfd, struct bfd_link_info *info)
     if (!ok)
         return false;
 
-    /* Determine 64-bit mode. Prefer header magic if present, else arch width. */
-    bool is64 = false;
-    struct plan9_exec_hdr *hdr = (struct plan9_exec_hdr *) abfd->tdata.any;
-    if (hdr)
-        {
-            uint32_t magic = hdr->magic;
-            if (magic == R_MAGIC || magic == S_MAGIC || magic == T_MAGIC || magic == U_MAGIC)
-                is64 = true;
-        }
-    else if (abfd->arch_info && abfd->arch_info->bits_per_address == 64)
+    struct plan9_file_info *finfo = (struct plan9_file_info *) abfd->tdata.any;
+    struct plan9_exec_hdr *hdr = finfo ? &finfo->hdr : NULL;
+    uint32_t magic = 0;
+    if (hdr && bfd_getb32 (&hdr->magic) != 0)
+        magic = bfd_getb32 (&hdr->magic);
+    else
+        magic = plan9_guess_magic_from_bfd (abfd);
+    bool is64 = plan9_magic_is_64 (magic);
+    bfd_size_type header_size = plan9_header_size_for_magic (magic);
+    if (!hdr && !is64 && abfd->arch_info && abfd->arch_info->bits_per_address == 64)
         is64 = true;
 
     /* Compute section sizes and position of symbol table: header + text + data. */
@@ -925,145 +1111,29 @@ plan9_bfd_final_link (bfd *abfd, struct bfd_link_info *info)
     asection *data_sec = bfd_get_section_by_name (abfd, ".data");
     bfd_size_type textsz = text_sec ? bfd_get_section_limit_octets (abfd, text_sec) : 0;
     bfd_size_type datasz = data_sec ? bfd_get_section_limit_octets (abfd, data_sec) : 0;
-    file_ptr sym_filepos = PLAN9_EXEC_HDR_SIZE + (file_ptr) textsz + (file_ptr) datasz;
+    asection *bss_sec = bfd_get_section_by_name (abfd, ".bss");
+    bfd_size_type bsssz = bss_sec ? bfd_get_section_limit_octets (abfd, bss_sec) : 0;
 
-    /* Gather output symbols if the linker populated them. */
-    asymbol **outs = bfd_get_outsymbols (abfd);
-    unsigned int outcount = abfd->symcount;
+    struct plan9_sym_record *records = NULL;
+    unsigned int record_count = 0;
     bfd_size_type symsize = 0;
-    if (outs && outcount > 0)
-        {
-            for (unsigned int i = 0; i < outcount; i++)
-                {
-                    asymbol *s = outs[i];
-                    if (!s || !s->name || !s->section)
-                        continue;
-                    if (s->section == bfd_und_section_ptr
-                            || s->section == bfd_abs_section_ptr
-                            || s->section == bfd_com_section_ptr)
-                        continue;
-                    /* Map section to Plan 9 type letter. */
-                    char t = 0;
-                    flagword secf = s->section->flags;
-                    if (secf & SEC_CODE)
-                        t = (s->flags & BSF_GLOBAL) ? 'T' : 'L';
-                    else if ((secf & SEC_DATA) || (secf & SEC_HAS_CONTENTS))
-                        t = 'D';
-                    else if ((secf & SEC_ALLOC) && !(secf & SEC_HAS_CONTENTS))
-                        t = 'B';
-                    if (t == 0)
-                        continue;
-                    symsize += (is64 ? 8 : 4) + 1 + (bfd_size_type) (strlen (s->name) + 1);
-                }
-        }
-    if (symsize == 0 && abfd->start_address != 0)
-        symsize = (is64 ? 8 : 4) + 1 + (bfd_size_type) (strlen ("main") + 1);
-
-    if (symsize == 0)
-        return true; /* Nothing to emit. */
-
-    /* Append symbols. */
-    if (bfd_seek (abfd, sym_filepos, SEEK_SET) != 0)
+    if (!plan9_collect_output_symbols (abfd, is64, &records, &record_count, &symsize))
         return false;
 
-    if (outs && outcount > 0)
-        {
-            for (unsigned int i = 0; i < outcount; i++)
-                {
-                    asymbol *s = outs[i];
-                    if (!s || !s->name || !s->section)
-                        continue;
-                    if (s->section == bfd_und_section_ptr
-                            || s->section == bfd_abs_section_ptr
-                            || s->section == bfd_com_section_ptr)
-                        continue;
-                    char t = 0;
-                    flagword secf = s->section->flags;
-                    if (secf & SEC_CODE)
-                        t = (s->flags & BSF_GLOBAL) ? 'T' : 'L';
-                    else if ((secf & SEC_DATA) || (secf & SEC_HAS_CONTENTS))
-                        t = 'D';
-                    else if ((secf & SEC_ALLOC) && !(secf & SEC_HAS_CONTENTS))
-                        t = 'B';
-                    if (t == 0)
-                        continue;
-                    bfd_vma aval = bfd_asymbol_value (s);
-                    if (is64)
-                        {
-                            uint32_t hi = (uint32_t) (aval >> 32);
-                            uint32_t lo = (uint32_t) (aval & 0xffffffffu);
-                            bfd_byte w[8];
-                            bfd_putb32 (hi, w);
-                            bfd_putb32 (lo, w + 4);
-                            if (bfd_write (w, 8, abfd) != 8)
-                                return false;
-                        }
-                    else
-                        {
-                            uint32_t lo = (uint32_t) (aval & 0xffffffffu);
-                            bfd_byte w[4];
-                            bfd_putb32 (lo, w);
-                            if (bfd_write (w, 4, abfd) != 4)
-                                return false;
-                        }
-                    uint8_t type_plus = (uint8_t) (t + 0x80);
-                    if (bfd_write (&type_plus, 1, abfd) != 1)
-                        return false;
-                    size_t nlen = strlen (s->name) + 1;
-                    if (bfd_write (s->name, nlen, abfd) != (bfd_size_type) nlen)
-                        return false;
-                }
-        }
-    else
-        {
-            /* Fallback single symbol: T main at start address. */
-            bfd_vma aval = abfd->start_address;
-            if (is64)
-                {
-                    uint32_t hi = (uint32_t) (aval >> 32);
-                    uint32_t lo = (uint32_t) (aval & 0xffffffffu);
-                    bfd_byte w[8];
-                    bfd_putb32 (hi, w);
-                    bfd_putb32 (lo, w + 4);
-                    if (bfd_write (w, 8, abfd) != 8)
-                        return false;
-                }
-            else
-                {
-                    uint32_t lo = (uint32_t) (aval & 0xffffffffu);
-                    bfd_byte w[4];
-                    bfd_putb32 (lo, w);
-                    if (bfd_write (w, 4, abfd) != 4)
-                        return false;
-                }
-            uint8_t type_plus = (uint8_t) ('T' + 0x80);
-            if (bfd_write (&type_plus, 1, abfd) != 1)
-                return false;
-            const char *name = "main";
-            size_t nlen = strlen (name) + 1;
-            if (bfd_write (name, nlen, abfd) != (bfd_size_type) nlen)
-                return false;
-        }
-
-    /* Update header syms size and rewrite header. */
+    file_ptr sym_filepos = header_size + (file_ptr) textsz + (file_ptr) datasz;
+    if (record_count > 0)
     {
-        struct plan9_exec_hdr disk_hdr;
-        memset (&disk_hdr, 0, sizeof (disk_hdr));
-        uint32_t magic = hdr ? hdr->magic : R_MAGIC; /* default to 64-bit Plan 9 */
-        bfd_putb32 (magic, &disk_hdr.magic);
-        bfd_putb32 (textsz, &disk_hdr.text);
-        bfd_putb32 (datasz, &disk_hdr.data);
-        /* bss left as zero for now. */
-        bfd_putb32 (0, &disk_hdr.bss);
-        bfd_putb32 (symsize, &disk_hdr.syms);
-        bfd_putb32 (abfd->start_address, &disk_hdr.entry);
-        bfd_putb32 (0, &disk_hdr.spsz);
-        bfd_putb32 (0, &disk_hdr.pcsz);
-        if (bfd_seek (abfd, 0, SEEK_SET) != 0)
-            return false;
-        if (bfd_write (&disk_hdr, PLAN9_EXEC_HDR_SIZE, abfd) != PLAN9_EXEC_HDR_SIZE)
+        if (!plan9_write_symbol_records (abfd, sym_filepos, is64, records, record_count))
             return false;
     }
+
+        if (!plan9_write_exec_header (abfd, magic, textsz, datasz, bsssz, symsize))
+            return false;
+
+        if (text_sec)
+            text_sec->contents = NULL;
+        if (data_sec)
+            data_sec->contents = NULL;
 
     return true;
 }

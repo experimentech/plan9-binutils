@@ -38,6 +38,10 @@ fragment <<EOF
 #include "ldlex.h"
 #include "ldmisc.h"
 #include "ldctor.h"
+#include <stdint.h>
+
+#define PLAN9_EXEC_HDR_SIZE 32
+#define PLAN9_HDR_MAGIC 0x00008000u
 
 static void gld${EMULATION_NAME}_before_parse (void);
 static void gld${EMULATION_NAME}_before_allocation (void);
@@ -68,15 +72,33 @@ gld${EMULATION_NAME}_finish (void)
   if (!obfd)
     return;
 
+  /* Inspect the existing header to determine fat-header sizing. */
+  bfd_byte hdr_buf[PLAN9_EXEC_HDR_SIZE];
+  bfd_byte extra_buf[8];
+  bfd_size_type header_size = PLAN9_EXEC_HDR_SIZE;
+  uint32_t magic = 0;
+  bool is64 = false;
+
+  if (bfd_seek (obfd, 0, SEEK_SET) != 0)
+    return;
+  if (bfd_read (hdr_buf, PLAN9_EXEC_HDR_SIZE, obfd) != PLAN9_EXEC_HDR_SIZE)
+    return;
+  magic = bfd_getb32 (hdr_buf);
+  is64 = (magic & PLAN9_HDR_MAGIC) != 0;
+  if (is64)
+    {
+      if (bfd_read (extra_buf, sizeof (extra_buf), obfd) != (bfd_size_type) sizeof (extra_buf))
+        return;
+      header_size += sizeof (extra_buf);
+    }
+
   /* Determine sizes and where to place the symbol table: header + text + data. */
   asection *text = bfd_get_section_by_name (obfd, ".text");
   asection *data = bfd_get_section_by_name (obfd, ".data");
   bfd_size_type textsz = text ? bfd_get_section_limit_octets (obfd, text) : 0;
   bfd_size_type datasz = data ? bfd_get_section_limit_octets (obfd, data) : 0;
-  file_ptr sympos = 32 + (file_ptr) textsz + (file_ptr) datasz;
+  file_ptr sympos = (file_ptr) header_size + (file_ptr) textsz + (file_ptr) datasz;
 
-  /* Only handle 64-bit for this emulation (aarch64plan9). */
-  bool is64 = true;
   bfd_vma aval = bfd_get_start_address (obfd);
 
   /* Build and write a single symbol record: value (8B BE), type (1B), name "main\0". */
@@ -117,18 +139,11 @@ gld${EMULATION_NAME}_finish (void)
 
   /* Rewrite header with updated syms size. */
   {
-    bfd_byte hdr[32];
-    memset (hdr, 0, sizeof (hdr));
-    /* Preserve existing magic, text, data, entry: read current header first. */
-    if (bfd_seek (obfd, 0, SEEK_SET) != 0)
-      return;
-    if (bfd_read (hdr, sizeof (hdr), obfd) != (bfd_size_type) sizeof (hdr))
-      return;
     /* Overwrite syms (offset 16..19) and restore file pos to 0 to rewrite. */
-    bfd_putb32 ((uint32_t) symsz, hdr + 16);
+    bfd_putb32 ((uint32_t) symsz, hdr_buf + 16);
     if (bfd_seek (obfd, 0, SEEK_SET) != 0)
       return;
-    if (bfd_write (hdr, sizeof (hdr), obfd) != (bfd_size_type) sizeof (hdr))
+    if (bfd_write (hdr_buf, PLAN9_EXEC_HDR_SIZE, obfd) != PLAN9_EXEC_HDR_SIZE)
       return;
   }
 }
